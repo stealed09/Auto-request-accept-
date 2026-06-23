@@ -8,21 +8,17 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     Message, ChatJoinRequest, ChatMemberUpdated,
-    InlineKeyboardMarkup, InlineKeyboardButton
+    InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from pyrogram import Client as PyroClient
-from pyrogram.types import Message as PyroMessage
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  CONFIG
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 BOT_TOKEN  = "YOUR_BOT_TOKEN_HERE"
 OWNER_ID   = 123456789
-API_ID     = 0          # my.telegram.org se lo
-API_HASH   = ""         # my.telegram.org se lo
 
 START_TIME = time.time()
 logging.basicConfig(level=logging.INFO)
@@ -49,12 +45,17 @@ CREATE TABLE IF NOT EXISTS chats (
     accept    INTEGER DEFAULT 1
 );
 """)
-# Add accept column if upgrading old DB
-try:
-    cur.execute("ALTER TABLE chats ADD COLUMN accept INTEGER DEFAULT 1")
-    conn.commit()
-except Exception:
-    pass
+# Add columns if upgrading old DB
+for col_sql in [
+    "ALTER TABLE chats ADD COLUMN username TEXT",
+    "ALTER TABLE chats ADD COLUMN chat_type TEXT",
+    "ALTER TABLE chats ADD COLUMN accept INTEGER DEFAULT 1",
+]:
+    try:
+        cur.execute(col_sql)
+        conn.commit()
+    except Exception:
+        pass
 conn.commit()
 
 def get_setting(key, default=None):
@@ -80,20 +81,14 @@ def uptime_str() -> str:
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  BUTTON TEXT PARSER
-#  Normal line  → 2 per row
-#  ^Name^ line  → full width (1 per row)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 def parse_button_text(text: str):
     """
-    Parse button input into rows_data.
-    Returns (rows_data, btn_list_str)
-
-    Syntax:
-      Name | https://link     → 2 per row (normal)
-      Name || https://link    → full width (alone on its row)
+    Name | https://link      → 2 per row
+    Name || https://link     → full width
     """
     lines = text.strip().splitlines()
-    entries = []  # list of (name, url, full_width)
+    entries = []
 
     for line in lines:
         line = line.strip()
@@ -123,7 +118,6 @@ def parse_button_text(text: str):
             rows_data.append([{"text": name, "url": link}])
             i += 1
         else:
-            # peek next
             if i + 1 < len(entries) and not entries[i+1][2]:
                 n2, l2, _ = entries[i+1]
                 rows_data.append([
@@ -183,30 +177,10 @@ async def send_welcome(chat_id: int, mention: str = None):
         log.warning(f"send_welcome failed {chat_id}: {e}")
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  PYROGRAM — extract buttons from forwarded message
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-def extract_pyro_buttons(pyro_msg: PyroMessage) -> list:
-    """Extract inline URL buttons from a Pyrogram message."""
-    rows_data = []
-    if not pyro_msg.reply_markup:
-        return rows_data
-    try:
-        for row in pyro_msg.reply_markup.inline_keyboard:
-            row_data = []
-            for btn in row:
-                if btn.url:
-                    row_data.append({"text": btn.text, "url": btn.url})
-            if row_data:
-                rows_data.append(row_data)
-    except Exception:
-        pass
-    return rows_data
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  STATES
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 class SaveFlow(StatesGroup):
-    waiting_buttons = State()   # fallback if pyro gets no buttons
+    waiting_buttons = State()
 
 class BroadcastFlow(StatesGroup):
     waiting = State()
@@ -214,40 +188,11 @@ class BroadcastFlow(StatesGroup):
 class AddButtonFlow(StatesGroup):
     waiting = State()
 
-class LoginFlow(StatesGroup):
-    waiting_api_id   = State()
-    waiting_api_hash = State()
-    waiting_phone    = State()
-    waiting_code     = State()
-    waiting_2fa      = State()
-
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  BOT + DISPATCHER
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 bot = Bot(token=BOT_TOKEN)
 dp  = Dispatcher(storage=MemoryStorage())
-
-# Global pyrogram client (None until logged in)
-pyro_app: PyroClient | None = None
-
-async def get_pyro_client() -> PyroClient | None:
-    global pyro_app
-    api_id   = get_setting("pyro_api_id")
-    api_hash = get_setting("pyro_api_hash")
-    if not api_id or not api_hash:
-        return None
-    if pyro_app is None or not pyro_app.is_connected:
-        try:
-            pyro_app = PyroClient(
-                "userbot_session",
-                api_id=int(api_id),
-                api_hash=api_hash
-            )
-            await pyro_app.start()
-        except Exception as e:
-            log.warning(f"Pyrogram start failed: {e}")
-            pyro_app = None
-    return pyro_app
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  /start
@@ -259,7 +204,6 @@ async def cmd_start(msg: Message):
     st = "🟢 ON" if mode == "auto" else "🔴 OFF"
 
     if welcome_type:
-        # Send actual welcome preview
         await send_welcome(msg.chat.id)
     else:
         await msg.reply(
@@ -274,7 +218,7 @@ async def cmd_start(msg: Message):
         )
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  CHAT ID RESOLVER (add channel/group manually)
+#  CHAT ID RESOLVER
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 async def resolve_chat_id(raw: str):
     """Resolve @username, t.me link, or -100xxx → (chat_id, title, username, chat_type)"""
@@ -284,28 +228,35 @@ async def resolve_chat_id(raw: str):
     elif "t.me/" in raw:
         import re
         m = re.search(r"t\.me/([A-Za-z0-9_]+)", raw)
-        if not m: return None
+        if not m:
+            return None
         username = m.group(1)
     else:
-        # Try as numeric ID
         try:
             chat = await bot.get_chat(int(raw))
-            return chat.id, chat.title or "Unknown", chat.username, chat.type
+            return chat.id, chat.title or "Unknown", chat.username, chat.type.value
         except Exception:
             return None
     try:
         chat = await bot.get_chat(f"@{username}")
-        return chat.id, chat.title or "Unknown", chat.username, chat.type
+        return chat.id, chat.title or "Unknown", chat.username, chat.type.value
     except Exception:
         return None
 
 async def check_bot_admin(chat_id: int) -> dict:
+    """
+    FIX: chat_type check + correct attribute for can_invite_users
+    """
     try:
-        member = await bot.get_chat_member(chat_id, bot.id)
-        is_admin = member.status in ("administrator", "creator")
-        can_invite = getattr(member, "can_invite_users", False) if is_admin else False
-        return {"is_admin": is_admin, "can_invite": can_invite}
-    except Exception:
+        me = await bot.get_me()
+        member = await bot.get_chat_member(chat_id, me.id)
+        status = member.status.value if hasattr(member.status, "value") else str(member.status)
+        is_adm = status in ("administrator", "creator")
+        # ChatMemberAdministrator has can_invite_users attribute
+        can_invite = getattr(member, "can_invite_users", False) if is_adm else False
+        return {"is_admin": is_adm, "can_invite": bool(can_invite)}
+    except Exception as e:
+        log.warning(f"check_bot_admin error: {e}")
         return {"is_admin": False, "can_invite": False}
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -352,30 +303,39 @@ async def cmd_add_chat(msg: Message):
         allowed = {"channel", "group", "supergroup"}
         label, emoji = "Chat", "💬"
 
-    status = await msg.reply(f"⏳ Checking <code>{args[1]}</code>...", parse_mode="HTML")
+    status_msg = await msg.reply(f"⏳ Checking <code>{args[1]}</code>...", parse_mode="HTML")
     result = await resolve_chat_id(args[1])
     if not result:
-        return await status.edit_text("❌ Chat resolve nahi hua. Username/ID check karo.", parse_mode="HTML")
-    chat_id, title, username, chat_type = result
-    if chat_type not in allowed:
-        return await status.edit_text(f"❌ Ye <b>{chat_type}</b> hai, {label} nahi.", parse_mode="HTML")
+        return await status_msg.edit_text("❌ Chat resolve nahi hua. Username/ID check karo.", parse_mode="HTML")
 
-    admin = await check_bot_admin(chat_id)
-    if not admin["is_admin"]:
-        return await status.edit_text(f"❌ Bot <b>{title}</b> mein admin nahi hai! Pehle admin banao.", parse_mode="HTML")
-    if not admin["can_invite"]:
-        return await status.edit_text(
-            f"⚠️ Bot admin hai but <b>\"Add Members\"</b> permission nahi hai <b>{title}</b> mein.",
+    chat_id, title, username, chat_type = result
+
+    if chat_type not in allowed:
+        return await status_msg.edit_text(
+            f"❌ Ye <b>{chat_type}</b> hai, {label} nahi.",
             parse_mode="HTML"
         )
 
-    cur.execute("""INSERT OR REPLACE INTO chats
-                   (chat_id, title, username, chat_type, accept)
-                   VALUES (?,?,?,?,1)""",
-                (chat_id, title, username, chat_type))
+    admin = await check_bot_admin(chat_id)
+    if not admin["is_admin"]:
+        return await status_msg.edit_text(
+            f"❌ Bot <b>{title}</b> mein admin nahi hai! Pehle admin banao.",
+            parse_mode="HTML"
+        )
+    if not admin["can_invite"]:
+        return await status_msg.edit_text(
+            f"⚠️ Bot admin hai but <b>\"Add Members\"</b> permission nahi hai <b>{title}</b> mein.\n\n"
+            f"<i>Channel settings → Administrators → bot → Add Members ✅ karo.</i>",
+            parse_mode="HTML"
+        )
+
+    cur.execute(
+        "INSERT OR REPLACE INTO chats (chat_id, title, username, chat_type, accept) VALUES (?,?,?,?,1)",
+        (chat_id, title, username, chat_type)
+    )
     conn.commit()
     uname = f"@{username}" if username else "—"
-    await status.edit_text(
+    await status_msg.edit_text(
         f"✅ <b>{emoji} {label} added!</b>\n"
         f"━━━━━━━━━━▧▣▧━━━━━━━━━━\n"
         f"➺ <b>Title:</b> {title}\n"
@@ -419,20 +379,19 @@ async def cmd_setlog(msg: Message):
         return await msg.reply(
             f"📌 <b>Log Channel</b>\n"
             f"Current: <code>{current}</code>\n\n"
-            f"Usage: <code>/setlog -100xxxxxxxxx</code>\n\n"
-            f"<i>Bot ko us channel mein admin banao, phir koi bhi message forward karo wahan — welcome auto-save ho jayega!</i>",
+            f"Usage: <code>/setlog -100xxxxxxxxx</code>",
             parse_mode="HTML"
         )
     channel_id = args[1].strip()
     set_setting("log_channel", channel_id)
     await msg.reply(
         f"✅ Log channel set: <code>{channel_id}</code>\n\n"
-        f"Ab us channel mein koi bhi message forward karo — video + caption + buttons automatically save ho jayenge!",
+        f"Ab us channel mein koi bhi message forward karo — video + caption automatically save ho jayega!",
         parse_mode="HTML"
     )
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  LOG CHANNEL — auto save forwarded message
+#  LOG CHANNEL — auto save forwarded message (no pyrogram, no buttons)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 @dp.channel_post()
 async def on_channel_post(msg: Message):
@@ -445,11 +404,10 @@ async def on_channel_post(msg: Message):
     except Exception:
         return
 
-    # Only process forwarded messages
+    # Only forwarded messages
     if not (msg.forward_from_chat or msg.forward_from or msg.forward_sender_name):
         return
 
-    # Save media
     if msg.video:
         set_setting("welcome_type",    "video")
         set_setting("welcome_file_id", msg.video.file_id)
@@ -473,41 +431,13 @@ async def on_channel_post(msg: Message):
     else:
         return
 
-    # Try to get buttons via Pyrogram (if source chat available)
-    buttons_saved = False
-    session_str = get_setting("pyro_session")
-    api_id      = get_setting("pyro_api_id")
-    api_hash    = get_setting("pyro_api_hash")
-
-    if session_str and api_id and api_hash and msg.forward_from_chat:
-        try:
-            async with PyroClient(
-                "temp_session",
-                api_id=int(api_id),
-                api_hash=api_hash,
-                session_string=session_str
-            ) as app:
-                src_chat   = msg.forward_from_chat.id
-                src_msg_id = msg.forward_from_message_id
-                if src_msg_id:
-                    orig = await app.get_messages(src_chat, src_msg_id)
-                    rows_data = extract_pyro_buttons(orig)
-                    if rows_data:
-                        set_setting("welcome_buttons", json.dumps(rows_data))
-                        buttons_saved = True
-        except Exception as e:
-            log.warning(f"Pyrogram button fetch in log channel failed: {e}")
-
-    btn_status = "✅ Auto-fetched!" if buttons_saved else "⚠️ Purane buttons rakhe (source restricted)"
-
-    # Notify owner
     try:
         await bot.send_message(
             OWNER_ID,
             f"✅ <b>Welcome message auto-saved!</b>\n"
             f"━━━━━━━━━━▧▣▧━━━━━━━━━━\n"
             f"➺ Type: {media_type}\n"
-            f"➺ Buttons: {btn_status}\n\n"
+            f"➺ Buttons: /addbutton se set karo\n\n"
             f"/start karo preview ke liye.",
             parse_mode="HTML"
         )
@@ -515,140 +445,7 @@ async def on_channel_post(msg: Message):
         pass
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  /login — owner sets up userbot
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-@dp.message(Command("login"))
-async def cmd_login(msg: Message, state: FSMContext):
-    if msg.from_user.id != OWNER_ID:
-        return await msg.reply("⚠️ Only owner can do this.")
-    await state.set_state(LoginFlow.waiting_api_id)
-    await msg.reply(
-        "🔐 <b>Userbot Login</b>\n"
-        "━━━━━━━━━━▧▣▧━━━━━━━━━━\n"
-        "Step 1/3 — Apna <b>API ID</b> bhejo\n\n"
-        "<i>my.telegram.org pe jaao → App Configuration → API ID</i>",
-        parse_mode="HTML"
-    )
-
-@dp.message(LoginFlow.waiting_api_id, F.text)
-async def login_api_id(msg: Message, state: FSMContext):
-    if not msg.text.strip().isdigit():
-        return await msg.reply("❌ API ID sirf numbers hota hai. Dobara bhejo.")
-    await state.update_data(api_id=msg.text.strip())
-    await state.set_state(LoginFlow.waiting_api_hash)
-    await msg.reply(
-        "✅ API ID saved!\n\n"
-        "Step 2/3 — Apna <b>API Hash</b> bhejo",
-        parse_mode="HTML"
-    )
-
-@dp.message(LoginFlow.waiting_api_hash, F.text)
-async def login_api_hash(msg: Message, state: FSMContext):
-    await state.update_data(api_hash=msg.text.strip())
-    await state.set_state(LoginFlow.waiting_phone)
-    await msg.reply(
-        "✅ API Hash saved!\n\n"
-        "Step 3/3 — Apna <b>Phone Number</b> bhejo\n"
-        "Format: <code>+91XXXXXXXXXX</code>",
-        parse_mode="HTML"
-    )
-
-@dp.message(LoginFlow.waiting_phone, F.text)
-async def login_phone(msg: Message, state: FSMContext):
-    global pyro_app
-    data     = await state.get_data()
-    api_id   = int(data["api_id"])
-    api_hash = data["api_hash"]
-    phone    = msg.text.strip()
-
-    await msg.reply("⏳ OTP bhej raha hoon...")
-
-    try:
-        pyro_app = PyroClient(
-            "userbot_session",
-            api_id=api_id,
-            api_hash=api_hash,
-            in_memory=True
-        )
-        await pyro_app.connect()
-        sent = await pyro_app.send_code(phone)
-        await state.update_data(
-            api_id=api_id,
-            api_hash=api_hash,
-            phone=phone,
-            phone_code_hash=sent.phone_code_hash
-        )
-        await state.set_state(LoginFlow.waiting_code)
-        await msg.reply(
-            "📱 OTP aaya hoga Telegram pe!\n\n"
-            "OTP bhejo (spaces ke saath):\n"
-            "Example: <code>1 2 3 4 5</code>",
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        await state.clear()
-        pyro_app = None
-        await msg.reply(f"❌ Error: <code>{e}</code>", parse_mode="HTML")
-
-@dp.message(LoginFlow.waiting_code, F.text)
-async def login_code(msg: Message, state: FSMContext):
-    global pyro_app
-    data  = await state.get_data()
-    code  = msg.text.strip().replace(" ", "")
-    phone = data["phone"]
-    phone_code_hash = data["phone_code_hash"]
-
-    try:
-        await pyro_app.sign_in(phone, phone_code_hash, code)
-        # Save credentials
-        set_setting("pyro_api_id",   str(data["api_id"]))
-        set_setting("pyro_api_hash", data["api_hash"])
-        # Export session string
-        session_str = await pyro_app.export_session_string()
-        set_setting("pyro_session", session_str)
-        await state.clear()
-        await msg.reply(
-            "✅ <b>Userbot login successful!</b>\n\n"
-            "Ab forwarded message ke buttons bhi automatically save honge! 🔥",
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        err = str(e)
-        if "two-steps" in err.lower() or "password" in err.lower() or "2fa" in err.lower():
-            await state.set_state(LoginFlow.waiting_2fa)
-            await msg.reply(
-                "🔒 2FA enabled hai!\n\n"
-                "Apna <b>2FA Password</b> bhejo:",
-                parse_mode="HTML"
-            )
-        else:
-            await state.clear()
-            pyro_app = None
-            await msg.reply(f"❌ Error: <code>{e}</code>", parse_mode="HTML")
-
-@dp.message(LoginFlow.waiting_2fa, F.text)
-async def login_2fa(msg: Message, state: FSMContext):
-    global pyro_app
-    data = await state.get_data()
-    try:
-        await pyro_app.check_password(msg.text.strip())
-        set_setting("pyro_api_id",   str(data["api_id"]))
-        set_setting("pyro_api_hash", data["api_hash"])
-        session_str = await pyro_app.export_session_string()
-        set_setting("pyro_session", session_str)
-        await state.clear()
-        await msg.reply(
-            "✅ <b>2FA verified! Userbot login successful!</b>\n\n"
-            "Ab forwarded message ke buttons bhi automatically save honge! 🔥",
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        await state.clear()
-        pyro_app = None
-        await msg.reply(f"❌ 2FA Error: <code>{e}</code>", parse_mode="HTML")
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  /save — reply to forwarded msg, buttons via pyrogram
+#  /save — reply to any message
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 @dp.message(Command("save"))
 async def cmd_save(msg: Message, state: FSMContext):
@@ -662,7 +459,6 @@ async def cmd_save(msg: Message, state: FSMContext):
             parse_mode="HTML"
         )
 
-    # Save media
     if r.video:
         set_setting("welcome_type",    "video")
         set_setting("welcome_file_id", r.video.file_id)
@@ -686,55 +482,19 @@ async def cmd_save(msg: Message, state: FSMContext):
     else:
         return await msg.reply("❌ Ye message type support nahi hota.")
 
-    # Try to get buttons via Pyrogram
-    buttons_saved = False
-    session_str = get_setting("pyro_session")
-    api_id      = get_setting("pyro_api_id")
-    api_hash    = get_setting("pyro_api_hash")
-
-    if session_str and api_id and api_hash and r.forward_from_chat:
-        try:
-            async with PyroClient(
-                "temp_session",
-                api_id=int(api_id),
-                api_hash=api_hash,
-                session_string=session_str
-            ) as app:
-                # Fetch original message from source chat
-                src_chat = r.forward_from_chat.id
-                src_msg_id = r.forward_from_message_id
-                if src_msg_id:
-                    orig = await app.get_messages(src_chat, src_msg_id)
-                    rows_data = extract_pyro_buttons(orig)
-                    if rows_data:
-                        set_setting("welcome_buttons", json.dumps(rows_data))
-                        buttons_saved = True
-        except Exception as e:
-            log.warning(f"Pyrogram button fetch failed: {e}")
-
-    if buttons_saved:
-        await msg.reply(
-            f"✅ <b>Welcome message saved!</b>\n"
-            f"━━━━━━━━━━▧▣▧━━━━━━━━━━\n"
-            f"➺ Type: {media_type}\n"
-            f"➺ Buttons: ✅ Auto-fetched!\n\n"
-            f"/start karo preview dekhne ke liye.",
-            parse_mode="HTML"
-        )
-    else:
-        # Fallback — ask manually
-        existing_btns = get_setting("welcome_buttons")
-        existing_note = "\n\n<i>Purane buttons hain. /skip karo unhe rakhne ke liye.</i>" if existing_btns else ""
-        await state.set_state(SaveFlow.waiting_buttons)
-        await state.update_data(media_type=media_type)
-        await msg.reply(
-            f"✅ <b>{media_type} saved!</b>\n\n"
-            f"🔗 Buttons bhejo:\n"
-            f"<code>Button Name | https://link</code>\n\n"
-            f"Multiple buttons — ek line mein ek.\n"
-            f"Buttons nahi chahiye to /skip karo.{existing_note}",
-            parse_mode="HTML"
-        )
+    existing_btns = get_setting("welcome_buttons")
+    existing_note = "\n\n<i>Purane buttons hain. /skip karo unhe rakhne ke liye.</i>" if existing_btns else ""
+    await state.set_state(SaveFlow.waiting_buttons)
+    await state.update_data(media_type=media_type)
+    await msg.reply(
+        f"✅ <b>{media_type} saved!</b>\n\n"
+        f"🔗 Buttons bhejo:\n"
+        f"<code>Button Name | https://link</code>\n\n"
+        f"Multiple buttons — ek line mein ek.\n"
+        f"Full width ke liye: <code>Name || https://link</code>\n"
+        f"Buttons nahi chahiye to /skip karo.{existing_note}",
+        parse_mode="HTML"
+    )
 
 @dp.message(SaveFlow.waiting_buttons, F.text)
 async def save_got_buttons(msg: Message, state: FSMContext):
@@ -752,7 +512,6 @@ async def save_got_buttons(msg: Message, state: FSMContext):
         )
 
     rows_data, btn_list = parse_button_text(msg.text)
-
     if not rows_data:
         return await msg.reply(
             "❌ Format galat hai.\n<code>Name | https://link</code>",
@@ -761,7 +520,6 @@ async def save_got_buttons(msg: Message, state: FSMContext):
 
     set_setting("welcome_buttons", json.dumps(rows_data))
     await state.clear()
-
     await msg.reply(
         f"✅ <b>Welcome message fully saved!</b>\n"
         f"━━━━━━━━━━▧▣▧━━━━━━━━━━\n"
@@ -782,7 +540,8 @@ async def cmd_addbutton(msg: Message, state: FSMContext):
     await msg.reply(
         "🔗 <b>Buttons bhejo:</b>\n"
         "<code>Button Name | https://link</code>\n\n"
-        "Multiple — ek line mein ek. Purane replace honge.",
+        "Multiple — ek line mein ek. Purane replace honge.\n"
+        "Full width: <code>Name || https://link</code>",
         parse_mode="HTML"
     )
 
@@ -803,45 +562,30 @@ async def cmd_clearbuttons(msg: Message):
     await msg.reply("🗑 Sab buttons remove ho gaye.")
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  /logout
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-@dp.message(Command("logout"))
-async def cmd_logout(msg: Message):
-    global pyro_app
-    if msg.from_user.id != OWNER_ID:
-        return await msg.reply("⚠️ Only owner can do this.")
-    set_setting("pyro_session", "")
-    set_setting("pyro_api_id", "")
-    set_setting("pyro_api_hash", "")
-    if pyro_app and pyro_app.is_connected:
-        await pyro_app.stop()
-    pyro_app = None
-    await msg.reply("✅ Userbot logged out.")
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  AUTO-ACCEPT JOIN REQUESTS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 @dp.chat_join_request()
 async def on_join_request(req: ChatJoinRequest):
-    cur.execute("INSERT OR IGNORE INTO chats VALUES (?,?,1)",
-                (req.chat.id, req.chat.title or ""))
+    # FIX: Correct column names in INSERT
+    cur.execute(
+        "INSERT OR IGNORE INTO chats (chat_id, title, chat_type, accept) VALUES (?,?,?,1)",
+        (req.chat.id, req.chat.title or "", req.chat.type.value if hasattr(req.chat.type, "value") else str(req.chat.type))
+    )
     conn.commit()
-    # Global toggle check
+
     mode = get_setting("accept_mode", "auto")
     if mode != "auto":
         return
-    # Per-chat toggle check
+
     cur.execute("SELECT accept FROM chats WHERE chat_id=?", (req.chat.id,))
     row = cur.fetchone()
     if row and row[0] == 0:
         return
+
     try:
         await req.approve()
         mention = req.from_user.mention_html()
-        try:
-            await send_welcome(req.from_user.id, mention)
-        except Exception:
-            pass
+        # FIX: Welcome sirf group/channel mein bhejo, DM nahi
         await send_welcome(req.chat.id, mention)
     except Exception as e:
         log.warning(f"Join approve failed: {e}")
@@ -851,11 +595,14 @@ async def on_join_request(req: ChatJoinRequest):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 @dp.chat_member()
 async def on_new_member(update: ChatMemberUpdated):
-    old = update.old_chat_member.status
-    new = update.new_chat_member.status
+    old = update.old_chat_member.status.value if hasattr(update.old_chat_member.status, "value") else str(update.old_chat_member.status)
+    new = update.new_chat_member.status.value if hasattr(update.new_chat_member.status, "value") else str(update.new_chat_member.status)
     if old in ("left", "kicked") and new == "member":
-        cur.execute("INSERT OR IGNORE INTO chats VALUES (?,?)",
-                    (update.chat.id, update.chat.title or ""))
+        # FIX: Correct INSERT with column names
+        cur.execute(
+            "INSERT OR IGNORE INTO chats (chat_id, title, chat_type) VALUES (?,?,?)",
+            (update.chat.id, update.chat.title or "", update.chat.type.value if hasattr(update.chat.type, "value") else str(update.chat.type))
+        )
         conn.commit()
         mention = update.new_chat_member.user.mention_html()
         await send_welcome(update.chat.id, mention)
@@ -883,8 +630,6 @@ async def cmd_autoaccept(msg: Message):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  /chats — per-chat auto-accept toggle
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-from aiogram.types import CallbackQuery
-
 def build_chats_keyboard(page: int = 0, filter_type: str = "all"):
     if filter_type == "all":
         cur.execute("SELECT chat_id, title, COALESCE(username,''), COALESCE(chat_type,'channel'), accept FROM chats ORDER BY chat_type, title")
@@ -909,7 +654,6 @@ def build_chats_keyboard(page: int = 0, filter_type: str = "all"):
             )
         ])
 
-    # Pagination
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton(text="◀️ Prev", callback_data=f"chpage:{page-1}:{filter_type}"))
@@ -919,11 +663,12 @@ def build_chats_keyboard(page: int = 0, filter_type: str = "all"):
         buttons.append(nav)
 
     buttons.append([
-        InlineKeyboardButton(text="📢 Channels", callback_data=f"chfilter:channel:0"),
-        InlineKeyboardButton(text="👥 Groups", callback_data=f"chfilter:group:0"),
+        InlineKeyboardButton(text="📢 Channels", callback_data="chfilter:channel:0"),
+        InlineKeyboardButton(text="👥 Groups",   callback_data="chfilter:group:0"),
+        InlineKeyboardButton(text="🔄 All",      callback_data="chfilter:all:0"),
     ])
     buttons.append([
-        InlineKeyboardButton(text="✅ All ON", callback_data="chall:on"),
+        InlineKeyboardButton(text="✅ All ON",  callback_data="chall:on"),
         InlineKeyboardButton(text="❌ All OFF", callback_data="chall:off"),
     ])
 
@@ -995,7 +740,8 @@ async def cb_chall(cb: CallbackQuery):
     conn.commit()
     label = "🟢 ON" if val else "🔴 OFF"
     await cb.answer(f"Sab chats: {label}", show_alert=True)
-    kb, _ = build_chats_keyboard(0)
+    # FIX: filter_type argument diya
+    kb, _ = build_chats_keyboard(0, "all")
     await cb.message.edit_reply_markup(reply_markup=kb)
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1020,7 +766,7 @@ async def do_broadcast(msg: Message, state: FSMContext):
             ok += 1
         except Exception:
             fail += 1
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.5)  # FIX: 0.05 se 0.5 — rate limit safe
     await msg.reply(f"📢 <b>Broadcast done!</b>\n✅ Sent: {ok}\n❌ Failed: {fail}", parse_mode="HTML")
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1085,15 +831,13 @@ async def cmd_stats(msg: Message):
     mode  = get_setting("accept_mode", "auto")
     st    = "🟢 ON" if mode == "auto" else "🔴 OFF"
     wtype = get_setting("welcome_type", "❌ Not set")
-    sess     = "✅ Active" if get_setting("pyro_session") else "❌ Not logged in"
-    log_ch   = get_setting("log_channel", "❌ Not set")
+    log_ch = get_setting("log_channel", "❌ Not set")
     await msg.reply(
         f"📊 <b>Bot Stats</b>\n━━━━━━━━━━▧▣▧━━━━━━━━━━\n"
         f"➺ <b>Chats:</b> {total_chats}\n"
         f"➺ <b>Admins:</b> {total_admins}\n"
         f"➺ <b>Auto-Accept:</b> {st}\n"
         f"➺ <b>Welcome Type:</b> {wtype}\n"
-        f"➺ <b>Userbot:</b> {sess}\n"
         f"➺ <b>Log Channel:</b> <code>{log_ch}</code>\n"
         f"➺ <b>Uptime:</b> ⏳ {uptime_str()}\n"
         f"━━━━━━━━━━▧▣▧━━━━━━━━━━",
@@ -1124,8 +868,6 @@ async def cmd_help(msg: Message):
         "/admins — Admin list\n\n"
         "👑 <b>Owner Only</b>\n"
         "/setlog — Log channel set karo (auto-save)\n"
-        "/login — Userbot login (buttons auto-fetch)\n"
-        "/logout — Userbot logout\n"
         "/addadmin — Reply → admin banao\n"
         "/removeadmin — Reply → admin hatao\n"
         "━━━━━━━━━━▧▣▧━━━━━━━━━━\n"
@@ -1139,23 +881,6 @@ async def cmd_help(msg: Message):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 async def main():
     log.info("⚔️ Satoru Gojo Bot starting...")
-    # Try to restore pyrogram session on startup
-    session_str = get_setting("pyro_session")
-    api_id      = get_setting("pyro_api_id")
-    api_hash    = get_setting("pyro_api_hash")
-    if session_str and api_id and api_hash:
-        try:
-            global pyro_app
-            pyro_app = PyroClient(
-                "userbot_session",
-                api_id=int(api_id),
-                api_hash=api_hash,
-                session_string=session_str
-            )
-            await pyro_app.start()
-            log.info("✅ Pyrogram userbot connected!")
-        except Exception as e:
-            log.warning(f"Pyrogram restore failed: {e}")
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 if __name__ == "__main__":
