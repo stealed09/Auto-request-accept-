@@ -1,3 +1,4 @@
+import os
 import asyncio
 import logging
 import sqlite3
@@ -17,8 +18,8 @@ from aiogram.fsm.storage.memory import MemoryStorage
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  CONFIG
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-BOT_TOKEN  = "YOUR_BOT_TOKEN_HERE"
-OWNER_ID   = 123456789
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+OWNER_ID  = int(os.environ.get("OWNER_ID", "0"))
 
 START_TIME = time.time()
 logging.basicConfig(level=logging.INFO)
