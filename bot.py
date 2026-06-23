@@ -225,23 +225,37 @@ async def resolve_chat_id(raw: str):
     raw = raw.strip()
     if raw.startswith("@"):
         username = raw.lstrip("@")
+        try:
+            chat = await bot.get_chat(f"@{username}")
+            return chat.id, chat.title or "Unknown", chat.username, chat.type.value
+        except Exception:
+            return None
     elif "t.me/" in raw:
         import re
         m = re.search(r"t\.me/([A-Za-z0-9_]+)", raw)
         if not m:
             return None
         username = m.group(1)
-    else:
         try:
-            chat = await bot.get_chat(int(raw))
+            chat = await bot.get_chat(f"@{username}")
             return chat.id, chat.title or "Unknown", chat.username, chat.type.value
         except Exception:
             return None
-    try:
-        chat = await bot.get_chat(f"@{username}")
-        return chat.id, chat.title or "Unknown", chat.username, chat.type.value
-    except Exception:
-        return None
+    else:
+        # Numeric ID — private group/channel ke liye get_chat fail ho sakta hai
+        try:
+            chat_id = int(raw)
+        except ValueError:
+            return None
+        try:
+            chat = await bot.get_chat(chat_id)
+            return chat.id, chat.title or "Unknown", chat.username, chat.type.value
+        except Exception:
+            # Private group/channel mein bot member hai but get_chat fail — directly use karo
+            # chat_type guess karo ID se
+            if str(chat_id).startswith("-100"):
+                return chat_id, f"Chat {chat_id}", None, "supergroup"
+            return None
 
 async def check_bot_admin(chat_id: int) -> dict:
     """
@@ -807,6 +821,33 @@ async def cmd_admins(msg: Message):
     await msg.reply("\n".join(lines), parse_mode="HTML")
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  /id — group/channel mein bhejo to ID milegi
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+@dp.message(Command("id"))
+async def cmd_id(msg: Message):
+    chat = msg.chat
+    user = msg.from_user
+    if chat.type == "private":
+        await msg.reply(
+            f"🆔 <b>Your ID:</b> <code>{user.id}</code>",
+            parse_mode="HTML"
+        )
+    else:
+        chat_type = chat.type.value if hasattr(chat.type, "value") else str(chat.type)
+        uname = f"@{chat.username}" if chat.username else "Private (no username)"
+        await msg.reply(
+            f"🆔 <b>Chat Info</b>\n"
+            f"━━━━━━━━━━▧▣▧━━━━━━━━━━\n"
+            f"➺ <b>Title:</b> {chat.title}\n"
+            f"➺ <b>ID:</b> <code>{chat.id}</code>\n"
+            f"➺ <b>Type:</b> {chat_type}\n"
+            f"➺ <b>Username:</b> {uname}\n\n"
+            f"Ab copy karo aur:\n"
+            f"<code>/addgroup {chat.id}</code>",
+            parse_mode="HTML"
+        )
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  /ping  /stats  /help
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 @dp.message(Command("ping"))
@@ -857,7 +898,8 @@ async def cmd_help(msg: Message):
         "/chats — Sab chats ki list with toggles\n\n"
         "🌀 <b>General</b>\n"
         "/start — Welcome message\n"
-        "/ping — Ping + uptime\n\n"
+        "/ping — Ping + uptime\n"
+        "/id — Group/Channel ka ID pao (wahan bhejo)\n\n"
         "🛡 <b>Admin Only</b>\n"
         "/save — Message reply karke welcome set karo\n"
         "/addbutton — Sirf buttons update karo\n"
