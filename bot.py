@@ -284,7 +284,8 @@ async def cmd_add_chat(msg: Message):
     parts = msg.text.split(maxsplit=2)
     # Optional: /addgroup -100xxx Custom Name
     custom_name = parts[2].strip() if len(parts) == 3 else None
-    args = msg.text.split(maxsplit=1)
+    # args[1] sirf ID/username hona chahiye — naam nahi
+    args = [parts[0], parts[1]] if len(parts) >= 2 else parts
     if len(args) < 2:
         if cmd == "addchannel":
             return await msg.reply(
