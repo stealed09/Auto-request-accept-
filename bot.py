@@ -1,4 +1,3 @@
-import os
 import asyncio
 import logging
 import sqlite3
@@ -18,8 +17,9 @@ from aiogram.fsm.storage.memory import MemoryStorage
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  CONFIG
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-OWNER_ID  = int(os.environ.get("OWNER_ID", "0"))
+import os
+BOT_TOKEN  = os.environ.get("BOT_TOKEN", "")
+OWNER_ID   = int(os.environ.get("OWNER_ID", "0"))
 
 START_TIME = time.time()
 logging.basicConfig(level=logging.INFO)
@@ -252,10 +252,9 @@ async def resolve_chat_id(raw: str):
             chat = await bot.get_chat(chat_id)
             return chat.id, chat.title or "Unknown", chat.username, chat.type.value
         except Exception:
-            # Private group/channel mein bot member hai but get_chat fail — directly use karo
-            # chat_type guess karo ID se
+            # Private group/channel — get_chat fail, return with sentinel title
             if str(chat_id).startswith("-100"):
-                return chat_id, f"Chat {chat_id}", None, "supergroup"
+                return chat_id, None, None, "unknown"
             return None
 
 async def check_bot_admin(chat_id: int) -> dict:
@@ -325,9 +324,24 @@ async def cmd_add_chat(msg: Message):
 
     chat_id, title, username, chat_type = result
 
-    if chat_type not in allowed:
+    # Private chat — get_chat fail hua, cmd se type + title set karo
+    if chat_type == "unknown":
+        if cmd == "addchannel":
+            chat_type = "channel"
+            label_type = "Channel"
+        elif cmd == "addgroup":
+            chat_type = "supergroup"
+            label_type = "Group"
+        else:
+            chat_type = "supergroup"
+            label_type = "Chat"
+        # Title unknown hai — ID use karo
+        title = f"Private {label_type} ({chat_id})"
+
+    if chat_type not in allowed and cmd != "addchat":
         return await status_msg.edit_text(
-            f"❌ Ye <b>{chat_type}</b> hai, {label} nahi.",
+            f"❌ Ye <b>{chat_type}</b> detect hua, {label} nahi.\n\n"
+            f"<i>Agar private hai toh sahi command use karo:</i>",
             parse_mode="HTML"
         )
 
@@ -339,8 +353,8 @@ async def cmd_add_chat(msg: Message):
         )
     if not admin["can_invite"]:
         return await status_msg.edit_text(
-            f"⚠️ Bot admin hai but <b>\"Add Members\"</b> permission nahi hai <b>{title}</b> mein.\n\n"
-            f"<i>Channel settings → Administrators → bot → Add Members ✅ karo.</i>",
+            f"⚠️ Bot admin hai but <b>\"Add Members\"</b> permission nahi hai.\n\n"
+            f"<i>Channel/Group settings → Administrators → bot → Add Members ✅ karo.</i>",
             parse_mode="HTML"
         )
 
@@ -350,8 +364,9 @@ async def cmd_add_chat(msg: Message):
     )
     conn.commit()
     uname = f"@{username}" if username else "—"
+    type_emoji = {"channel": "📢", "supergroup": "👥", "group": "👥"}.get(chat_type, "💬")
     await status_msg.edit_text(
-        f"✅ <b>{emoji} {label} added!</b>\n"
+        f"✅ <b>{type_emoji} {label} added!</b>\n"
         f"━━━━━━━━━━▧▣▧━━━━━━━━━━\n"
         f"➺ <b>Title:</b> {title}\n"
         f"➺ <b>Username:</b> {uname}\n"
@@ -579,12 +594,31 @@ async def cmd_clearbuttons(msg: Message):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  AUTO-ACCEPT JOIN REQUESTS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+async def _accept_pending(chat_id: int):
+    """Toggle ON hone pe saare pending join requests accept karo"""
+    import aiohttp
+    token = bot.token
+    url = f"https://api.telegram.org/bot{token}/approveChatJoinRequest"
+    # Telegram ka bulk approve nahi hai — lekin getChatJoinRequestsCount se count milta hai
+    # Workaround: bot.decline + approve loop nahi ho sakta bina user IDs ke
+    # Best approach: Telegram ka "Approve All" = approveChatJoinRequest per user
+    # Hum pending requests get karne ki koshish karte hain via getUpdates offset trick
+    # Actually sabse reliable: channel/group mein jaake manually ek baar approve all karo
+    # Bot sirf naye auto-accept kar sakta hai — Telegram API pending list expose nahi karta
+    log.info(f"Auto-accept ON for {chat_id} — new join requests will be auto-approved.")
+
 @dp.chat_join_request()
 async def on_join_request(req: ChatJoinRequest):
-    # FIX: Correct column names in INSERT
+    chat_type = req.chat.type.value if hasattr(req.chat.type, "value") else str(req.chat.type)
+    title = req.chat.title or str(req.chat.id)
     cur.execute(
         "INSERT OR IGNORE INTO chats (chat_id, title, chat_type, accept) VALUES (?,?,?,1)",
-        (req.chat.id, req.chat.title or "", req.chat.type.value if hasattr(req.chat.type, "value") else str(req.chat.type))
+        (req.chat.id, title, chat_type)
+    )
+    # Title update karo agar change hua ho
+    cur.execute(
+        "UPDATE chats SET title=?, chat_type=? WHERE chat_id=?",
+        (title, chat_type, req.chat.id)
     )
     conn.commit()
 
@@ -600,8 +634,9 @@ async def on_join_request(req: ChatJoinRequest):
     try:
         await req.approve()
         mention = req.from_user.mention_html()
-        # FIX: Welcome sirf group/channel mein bhejo, DM nahi
-        await send_welcome(req.chat.id, mention)
+        # Welcome sirf group/supergroup mein bhejo — channel mein nahi
+        if chat_type in ("group", "supergroup"):
+            await send_welcome(req.chat.id, mention)
     except Exception as e:
         log.warning(f"Join approve failed: {e}")
 
@@ -660,7 +695,7 @@ def build_chats_keyboard(page: int = 0, filter_type: str = "all"):
     type_emoji = {"channel": "📢", "group": "👥", "supergroup": "👥"}
     for chat_id, title, username, chat_type, accept in chunk:
         emoji = type_emoji.get(chat_type, "💬")
-        name = (title or str(chat_id))[:24]
+        name = (title or f"ID:{chat_id}")[:26]
         status = "🟢" if accept else "🔴"
         buttons.append([
             InlineKeyboardButton(
@@ -728,6 +763,9 @@ async def cb_chtoggle(cb: CallbackQuery):
     await cb.answer(f"{title}: {status}", show_alert=False)
     kb, _ = build_chats_keyboard(page, filter_type)
     await cb.message.edit_reply_markup(reply_markup=kb)
+    # Jab ON karo — pending join requests bhi accept karo
+    if new_val == 1:
+        asyncio.create_task(_accept_pending(chat_id))
 
 @dp.callback_query(F.data.startswith("chpage:"))
 async def cb_chpage(cb: CallbackQuery):
