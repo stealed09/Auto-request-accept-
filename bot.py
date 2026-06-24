@@ -693,6 +693,9 @@ async def cmd_autoaccept(msg: Message):
 def build_chats_keyboard(page: int = 0, filter_type: str = "all"):
     if filter_type == "all":
         cur.execute("SELECT chat_id, title, COALESCE(username,''), COALESCE(chat_type,'channel'), accept FROM chats ORDER BY chat_type, title")
+    elif filter_type == "supergroup":
+        # group aur supergroup dono include karo
+        cur.execute("SELECT chat_id, title, COALESCE(username,''), COALESCE(chat_type,'channel'), accept FROM chats WHERE chat_type IN ('group','supergroup') ORDER BY title")
     else:
         cur.execute("SELECT chat_id, title, COALESCE(username,''), COALESCE(chat_type,'channel'), accept FROM chats WHERE chat_type=? ORDER BY title", (filter_type,))
     rows = cur.fetchall()
@@ -729,7 +732,7 @@ def build_chats_keyboard(page: int = 0, filter_type: str = "all"):
 
     buttons.append([
         InlineKeyboardButton(text="📢 Channels", callback_data="chfilter:channel:0"),
-        InlineKeyboardButton(text="👥 Groups",   callback_data="chfilter:group:0"),
+        InlineKeyboardButton(text="👥 Groups",   callback_data="chfilter:supergroup:0"),
         InlineKeyboardButton(text="🔄 All",      callback_data="chfilter:all:0"),
     ])
     buttons.append([
