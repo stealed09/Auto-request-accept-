@@ -662,10 +662,9 @@ async def on_new_member(update: ChatMemberUpdated):
             (update.chat.id, update.chat.title or "", update.chat.type.value if hasattr(update.chat.type, "value") else str(update.chat.type))
         )
         conn.commit()
-        mention = update.new_chat_member.user.mention_html()
-        chat_type_val = update.chat.type.value if hasattr(update.chat.type, "value") else str(update.chat.type)
-        if chat_type_val in ("group", "supergroup"):
-            asyncio.create_task(send_welcome_autodelete(update.chat.id, mention))
+        # Welcome yahan nahi — on_join_request mein handle hota hai
+        # Direct join (invite link bina request ke) ke liye sirf DB update
+        pass
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  /autoaccept
