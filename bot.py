@@ -281,14 +281,17 @@ async def cmd_add_chat(msg: Message):
     if not is_admin(msg.from_user.id):
         return await msg.reply("⚠️ Only admins can use this.")
     cmd = msg.text.split()[0].lstrip("/")
+    parts = msg.text.split(maxsplit=2)
+    # Optional: /addgroup -100xxx Custom Name
+    custom_name = parts[2].strip() if len(parts) == 3 else None
     args = msg.text.split(maxsplit=1)
     if len(args) < 2:
         if cmd == "addchannel":
             return await msg.reply(
                 "📢 <b>Channel add karo:</b>\n\n"
                 "<code>/addchannel @username</code>\n"
-                "<code>/addchannel https://t.me/username</code>\n"
-                "<code>/addchannel -100xxxxxxxxxx</code>\n\n"
+                "<code>/addchannel -100xxxxxxxxxx</code>\n"
+                "<code>/addchannel -100xxxxxxxxxx My Channel</code> — custom naam\n\n"
                 "<i>Bot ko pehle channel mein admin banao (Add Members permission).</i>",
                 parse_mode="HTML"
             )
@@ -296,8 +299,9 @@ async def cmd_add_chat(msg: Message):
             return await msg.reply(
                 "👥 <b>Group add karo:</b>\n\n"
                 "<code>/addgroup @username</code>\n"
-                "<code>/addgroup https://t.me/username</code>\n"
-                "<code>/addgroup -100xxxxxxxxxx</code>",
+                "<code>/addgroup -100xxxxxxxxxx</code>\n"
+                "<code>/addgroup -100xxxxxxxxxx My Group</code> — custom naam\n\n"
+                "<i>Bot ko pehle group mein admin banao (Add Members permission).</i>",
                 parse_mode="HTML"
             )
         else:
@@ -335,8 +339,11 @@ async def cmd_add_chat(msg: Message):
         else:
             chat_type = "supergroup"
             label_type = "Chat"
-        # Title unknown hai — ID use karo
-        title = f"Private {label_type} ({chat_id})"
+        # Custom name diya? Use karo, warna generic
+        title = custom_name if custom_name else f"Private {label_type}"
+    elif custom_name:
+        # Public chat ka naam bhi override kar sakte ho
+        title = custom_name
 
     if chat_type not in allowed and cmd != "addchat":
         return await status_msg.edit_text(
@@ -634,9 +641,9 @@ async def on_join_request(req: ChatJoinRequest):
     try:
         await req.approve()
         mention = req.from_user.mention_html()
-        # Welcome sirf group/supergroup mein bhejo — channel mein nahi
+        # Welcome sirf group/supergroup mein bhejo — channel mein nahi, aur 5 min baad delete
         if chat_type in ("group", "supergroup"):
-            await send_welcome(req.chat.id, mention)
+            asyncio.create_task(send_welcome_autodelete(req.chat.id, mention))
     except Exception as e:
         log.warning(f"Join approve failed: {e}")
 
@@ -655,7 +662,9 @@ async def on_new_member(update: ChatMemberUpdated):
         )
         conn.commit()
         mention = update.new_chat_member.user.mention_html()
-        await send_welcome(update.chat.id, mention)
+        chat_type_val = update.chat.type.value if hasattr(update.chat.type, "value") else str(update.chat.type)
+        if chat_type_val in ("group", "supergroup"):
+            asyncio.create_task(send_welcome_autodelete(update.chat.id, mention))
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  /autoaccept
@@ -695,11 +704,16 @@ def build_chats_keyboard(page: int = 0, filter_type: str = "all"):
     type_emoji = {"channel": "📢", "group": "👥", "supergroup": "👥"}
     for chat_id, title, username, chat_type, accept in chunk:
         emoji = type_emoji.get(chat_type, "💬")
-        name = (title or f"ID:{chat_id}")[:26]
+        # Sirf actual title dikhao - Private Channel/Group nahi
+        display = title or f"ID:{chat_id}"
+        # Private wale title se "Private Channel/Group" hata ke sirf ID dikhao
+        if display.startswith("Private "):
+            display = f"ID: {chat_id}"
+        display = display[:30]
         status = "🟢" if accept else "🔴"
         buttons.append([
             InlineKeyboardButton(
-                text=f"{status} {emoji} {name}",
+                text=f"{status} {emoji} {display}",
                 callback_data=f"chtoggle:{chat_id}:{page}:{filter_type}"
             )
         ])
@@ -737,7 +751,8 @@ async def cmd_chats(msg: Message):
         )
     cur.execute("SELECT chat_type, COUNT(*) FROM chats GROUP BY chat_type")
     breakdown = cur.fetchall()
-    bd = " | ".join([f"{t}: {c}" for t, c in breakdown])
+    type_labels = {"channel": "Channel", "supergroup": "Group", "group": "Group"}
+    bd = " | ".join([f"{type_labels.get(t, t)}: {c}" for t, c in breakdown])
     await msg.reply(
         f"📋 <b>Chat List</b> — <i>{total} total ({bd})</i>\n"
         f"Toggle karo auto-accept per chat:",
@@ -927,35 +942,347 @@ async def cmd_stats(msg: Message):
 @dp.message(Command("help"))
 async def cmd_help(msg: Message):
     await msg.reply(
-        "⚔️ <b>Bot Commands</b>\n"
-        "━━━━━━━━━━▧▣▧━━━━━━━━━━\n"
-        "📌 <b>Chat Management (Admin)</b>\n"
-        "/addchannel — Channel add karo (ID/username/link)\n"
-        "/addgroup — Group add karo\n"
-        "/addchat — Auto-detect channel/group\n"
-        "/removechat — Chat remove karo\n"
-        "/chats — Sab chats ki list with toggles\n\n"
-        "🌀 <b>General</b>\n"
-        "/start — Welcome message\n"
-        "/ping — Ping + uptime\n"
-        "/id — Group/Channel ka ID pao (wahan bhejo)\n\n"
-        "🛡 <b>Admin Only</b>\n"
-        "/save — Message reply karke welcome set karo\n"
-        "/addbutton — Sirf buttons update karo\n"
-        "/clearbuttons — Buttons hatao\n"
-        "/autoaccept on|off — Global join request toggle\n"
-        "/broadcast — Sab chats mein message bhejo\n"
-        "/stats — Bot stats\n"
-        "/admins — Admin list\n\n"
-        "👑 <b>Owner Only</b>\n"
-        "/setlog — Log channel set karo (auto-save)\n"
-        "/addadmin — Reply → admin banao\n"
-        "/removeadmin — Reply → admin hatao\n"
-        "━━━━━━━━━━▧▣▧━━━━━━━━━━\n"
-        "✨ Bot ko group/channel mein <b>Admin</b> banao\n"
-        "with <b>Add Members</b> permission.",
+        "<b>Bot Guide</b>\n"
+        "------------------------\n\n"
+        "<b>Channel / Group Add Karna</b>\n"
+        "Pehle bot ko Admin banao + Add Members permission do\n"
+        "  /addchannel @username - Public channel\n"
+        "  /addgroup @username - Public group\n"
+        "  /addchannel -100xxxxxx Naam - Private channel\n"
+        "  /addgroup -100xxxxxx Naam - Private group\n\n"
+        "<b>Auto-Accept</b>\n"
+        "/chats - Sab chats list + toggle\n"
+        "/autoaccept on|off - Sab ek saath\n\n"
+        "<b>Welcome Message</b>\n"
+        "Video/photo/text reply karke /save\n"
+        "/addbutton - Buttons add karo\n"
+        "Format: Name | https://link\n\n"
+        "<b>Group Management (Admin Only)</b>\n"
+        "/ban - Reply karke user ban karo\n"
+        "/kick - Reply karke user kick karo\n"
+        "/mute [minutes] - Reply karke mute karo\n"
+        "/unmute - Mute hatao\n"
+        "/warn - Warning do (3 pe auto-ban)\n"
+        "/unwarn - Warnings reset karo\n"
+        "/pin - Message pin karo\n"
+        "/unpin - Pin hatao\n"
+        "/purge - Reply se le ke messages delete\n"
+        "/antilink on|off - Links auto-delete\n\n"
+        "<b>Other</b>\n"
+        "/stats - Bot details\n"
+        "/ping - Online check\n"
+        "/broadcast - Sab chats mein message\n"
+        "/removechat - Chat hatao\n"
+        "/id - Group/channel ID pata karo\n\n"
+        "------------------------\n"
+        "NOTE: Bot Admin + Add Members permission zaroori hai!",
         parse_mode="HTML"
     )
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  GROUP MANAGEMENT
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Warnings DB
+cur.executescript("""
+CREATE TABLE IF NOT EXISTS warnings (
+    user_id INTEGER,
+    chat_id INTEGER,
+    count   INTEGER DEFAULT 0,
+    PRIMARY KEY (user_id, chat_id)
+);
+""")
+conn.commit()
+
+def get_warns(user_id, chat_id):
+    cur.execute("SELECT count FROM warnings WHERE user_id=? AND chat_id=?", (user_id, chat_id))
+    row = cur.fetchone()
+    return row[0] if row else 0
+
+def add_warn(user_id, chat_id):
+    cur.execute("INSERT OR IGNORE INTO warnings (user_id, chat_id, count) VALUES (?,?,0)", (user_id, chat_id))
+    cur.execute("UPDATE warnings SET count=count+1 WHERE user_id=? AND chat_id=?", (user_id, chat_id))
+    conn.commit()
+    return get_warns(user_id, chat_id)
+
+def reset_warns(user_id, chat_id):
+    cur.execute("DELETE FROM warnings WHERE user_id=? AND chat_id=?", (user_id, chat_id))
+    conn.commit()
+
+async def is_group_admin(bot, chat_id, user_id):
+    try:
+        member = await bot.get_chat_member(chat_id, user_id)
+        return member.status.value in ("administrator", "creator")
+    except Exception:
+        return False
+
+# /ban
+@dp.message(Command("ban"))
+async def cmd_ban(msg: Message):
+    if msg.chat.type == "private":
+        return await msg.reply("⚠️ Ye command group mein use karo.")
+    if not await is_group_admin(bot, msg.chat.id, msg.from_user.id) and not is_admin(msg.from_user.id):
+        return await msg.reply("⚠️ Sirf admins ban kar sakte hain.")
+    target = msg.reply_to_message
+    if not target:
+        return await msg.reply("↩️ Kisi user ke message ko reply karke /ban likho.")
+    try:
+        await bot.ban_chat_member(msg.chat.id, target.from_user.id)
+        await msg.reply(
+            f"🚫 <b>{target.from_user.mention_html()}</b> ko ban kar diya gaya.",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await msg.reply(f"❌ Ban nahi ho saka: {e}")
+
+# /kick
+@dp.message(Command("kick"))
+async def cmd_kick(msg: Message):
+    if msg.chat.type == "private":
+        return await msg.reply("⚠️ Ye command group mein use karo.")
+    if not await is_group_admin(bot, msg.chat.id, msg.from_user.id) and not is_admin(msg.from_user.id):
+        return await msg.reply("⚠️ Sirf admins kick kar sakte hain.")
+    target = msg.reply_to_message
+    if not target:
+        return await msg.reply("↩️ Kisi user ke message ko reply karke /kick likho.")
+    try:
+        await bot.ban_chat_member(msg.chat.id, target.from_user.id)
+        await bot.unban_chat_member(msg.chat.id, target.from_user.id)
+        await msg.reply(
+            f"👢 <b>{target.from_user.mention_html()}</b> ko kick kar diya gaya.",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await msg.reply(f"❌ Kick nahi ho saka: {e}")
+
+# /mute
+@dp.message(Command("mute"))
+async def cmd_mute(msg: Message):
+    if msg.chat.type == "private":
+        return await msg.reply("⚠️ Ye command group mein use karo.")
+    if not await is_group_admin(bot, msg.chat.id, msg.from_user.id) and not is_admin(msg.from_user.id):
+        return await msg.reply("⚠️ Sirf admins mute kar sakte hain.")
+    target = msg.reply_to_message
+    if not target:
+        return await msg.reply("↩️ Kisi user ke message ko reply karke /mute likho.")
+    args = msg.text.split()
+    # Optional duration in minutes
+    duration = None
+    if len(args) > 1:
+        try:
+            duration = int(args[1])
+        except ValueError:
+            pass
+    from aiogram.types import ChatPermissions
+    from datetime import datetime, timedelta
+    until = datetime.now() + timedelta(minutes=duration) if duration else None
+    try:
+        await bot.restrict_chat_member(
+            msg.chat.id,
+            target.from_user.id,
+            permissions=ChatPermissions(can_send_messages=False),
+            until_date=until
+        )
+        dur_text = f" {duration} minute ke liye" if duration else " permanently"
+        await msg.reply(
+            f"🔇 <b>{target.from_user.mention_html()}</b> ko{dur_text} mute kar diya.",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await msg.reply(f"❌ Mute nahi ho saka: {e}")
+
+# /unmute
+@dp.message(Command("unmute"))
+async def cmd_unmute(msg: Message):
+    if msg.chat.type == "private":
+        return await msg.reply("⚠️ Ye command group mein use karo.")
+    if not await is_group_admin(bot, msg.chat.id, msg.from_user.id) and not is_admin(msg.from_user.id):
+        return await msg.reply("⚠️ Sirf admins unmute kar sakte hain.")
+    target = msg.reply_to_message
+    if not target:
+        return await msg.reply("↩️ Reply karke /unmute likho.")
+    from aiogram.types import ChatPermissions
+    try:
+        await bot.restrict_chat_member(
+            msg.chat.id,
+            target.from_user.id,
+            permissions=ChatPermissions(
+                can_send_messages=True,
+                can_send_media_messages=True,
+                can_send_other_messages=True,
+                can_add_web_page_previews=True
+            )
+        )
+        await msg.reply(
+            f"🔊 <b>{target.from_user.mention_html()}</b> unmute ho gaya.",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await msg.reply(f"❌ Unmute nahi ho saka: {e}")
+
+# /warn
+@dp.message(Command("warn"))
+async def cmd_warn(msg: Message):
+    if msg.chat.type == "private":
+        return await msg.reply("⚠️ Ye command group mein use karo.")
+    if not await is_group_admin(bot, msg.chat.id, msg.from_user.id) and not is_admin(msg.from_user.id):
+        return await msg.reply("⚠️ Sirf admins warn kar sakte hain.")
+    target = msg.reply_to_message
+    if not target:
+        return await msg.reply("↩️ Reply karke /warn likho.")
+    count = add_warn(target.from_user.id, msg.chat.id)
+    if count >= 3:
+        try:
+            await bot.ban_chat_member(msg.chat.id, target.from_user.id)
+            reset_warns(target.from_user.id, msg.chat.id)
+            await msg.reply(
+                f"🚫 <b>{target.from_user.mention_html()}</b> ko 3 warnings mil gayi — auto-ban!",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            await msg.reply(f"⚠️ 3 warnings ho gayi but ban nahi ho saka: {e}")
+    else:
+        await msg.reply(
+            f"\u26a0\ufe0f <b>{target.from_user.mention_html()}</b> ko warning #{count}/3 mili.\n"
+            f"3 warnings pe auto-ban hoga.",
+            parse_mode="HTML"
+        )
+
+# /unwarn
+@dp.message(Command("unwarn"))
+async def cmd_unwarn(msg: Message):
+    if msg.chat.type == "private":
+        return await msg.reply("⚠️ Ye command group mein use karo.")
+    if not await is_group_admin(bot, msg.chat.id, msg.from_user.id) and not is_admin(msg.from_user.id):
+        return await msg.reply("⚠️ Sirf admins unwarn kar sakte hain.")
+    target = msg.reply_to_message
+    if not target:
+        return await msg.reply("↩️ Reply karke /unwarn likho.")
+    reset_warns(target.from_user.id, msg.chat.id)
+    await msg.reply(
+        f"✅ <b>{target.from_user.mention_html()}</b> ki sab warnings reset ho gayi.",
+        parse_mode="HTML"
+    )
+
+# /pin
+@dp.message(Command("pin"))
+async def cmd_pin(msg: Message):
+    if msg.chat.type == "private":
+        return await msg.reply("⚠️ Ye command group mein use karo.")
+    if not await is_group_admin(bot, msg.chat.id, msg.from_user.id) and not is_admin(msg.from_user.id):
+        return await msg.reply("⚠️ Sirf admins pin kar sakte hain.")
+    target = msg.reply_to_message
+    if not target:
+        return await msg.reply("↩️ Kisi message ko reply karke /pin likho.")
+    try:
+        await bot.pin_chat_message(msg.chat.id, target.message_id, disable_notification=False)
+        await msg.reply("📌 Message pin ho gaya.")
+    except Exception as e:
+        await msg.reply(f"❌ Pin nahi ho saka: {e}")
+
+# /unpin
+@dp.message(Command("unpin"))
+async def cmd_unpin(msg: Message):
+    if msg.chat.type == "private":
+        return await msg.reply("⚠️ Ye command group mein use karo.")
+    if not await is_group_admin(bot, msg.chat.id, msg.from_user.id) and not is_admin(msg.from_user.id):
+        return await msg.reply("⚠️ Sirf admins unpin kar sakte hain.")
+    try:
+        await bot.unpin_chat_message(msg.chat.id)
+        await msg.reply("📌 Message unpin ho gaya.")
+    except Exception as e:
+        await msg.reply(f"❌ Unpin nahi ho saka: {e}")
+
+# /purge
+@dp.message(Command("purge"))
+async def cmd_purge(msg: Message):
+    if msg.chat.type == "private":
+        return await msg.reply("⚠️ Ye command group mein use karo.")
+    if not await is_group_admin(bot, msg.chat.id, msg.from_user.id) and not is_admin(msg.from_user.id):
+        return await msg.reply("⚠️ Sirf admins purge kar sakte hain.")
+    target = msg.reply_to_message
+    if not target:
+        return await msg.reply("↩️ Jis message se delete karna hai usse reply karke /purge likho.")
+    deleted = 0
+    try:
+        for mid in range(target.message_id, msg.message_id + 1):
+            try:
+                await bot.delete_message(msg.chat.id, mid)
+                deleted += 1
+            except Exception:
+                pass
+        status = await msg.answer(f"🗑 <b>{deleted} messages delete ho gaye.</b>", parse_mode="HTML")
+        await asyncio.sleep(3)
+        try:
+            await status.delete()
+        except Exception:
+            pass
+    except Exception as e:
+        await msg.reply(f"❌ Purge nahi ho saka: {e}")
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  ANTI-LINK FILTER
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+@dp.message(F.text & F.chat.type.in_({"group", "supergroup"}))
+async def anti_link_filter(msg: Message):
+    antilink = get_setting("antilink", "off")
+    if antilink != "on":
+        return
+    import re
+    if re.search(r"(https?://|t\.me/|@\w+)", msg.text or ""):
+        # Admin ka message skip
+        if await is_group_admin(bot, msg.chat.id, msg.from_user.id) or is_admin(msg.from_user.id):
+            return
+        try:
+            await msg.delete()
+            warn_msg = await msg.answer(
+                f"🚫 <b>{msg.from_user.mention_html()}</b> links allowed nahi hain!",
+                parse_mode="HTML"
+            )
+            await asyncio.sleep(5)
+            await warn_msg.delete()
+        except Exception:
+            pass
+
+@dp.message(Command("antilink"))
+async def cmd_antilink(msg: Message):
+    if not await is_group_admin(bot, msg.chat.id, msg.from_user.id) and not is_admin(msg.from_user.id):
+        return await msg.reply("⚠️ Sirf admins use kar sakte hain.")
+    args = msg.text.split()
+    if len(args) < 2 or args[1] not in ("on", "off"):
+        status = get_setting("antilink", "off")
+        st = "🟢 ON" if status == "on" else "🔴 OFF"
+        return await msg.reply(f"Anti-link abhi: <b>{st}</b>\nUsage: /antilink on|off", parse_mode="HTML")
+    await msg.reply(f"Anti-link <b>{'🟢 ON' if args[1]=='on' else '🔴 OFF'}</b> ho gaya.", parse_mode="HTML")
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  WELCOME AUTO-DELETE (5 min)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+async def send_welcome_autodelete(chat_id: int, mention: str = None):
+    """Welcome bhejo aur 5 min baad delete karo"""
+    msg_type = get_setting("welcome_type")
+    file_id  = get_setting("welcome_file_id")
+    caption  = get_setting("welcome_caption", "")
+    keyboard = saved_keyboard()
+    text = f"👋 {mention}\n{caption}" if mention else caption
+    sent = None
+    try:
+        if msg_type == "video" and file_id:
+            sent = await bot.send_video(chat_id=chat_id, video=file_id, caption=text or None, reply_markup=keyboard, parse_mode="HTML")
+        elif msg_type == "photo" and file_id:
+            sent = await bot.send_photo(chat_id=chat_id, photo=file_id, caption=text or None, reply_markup=keyboard, parse_mode="HTML")
+        elif msg_type == "animation" and file_id:
+            sent = await bot.send_animation(chat_id=chat_id, animation=file_id, caption=text or None, reply_markup=keyboard, parse_mode="HTML")
+        elif text:
+            sent = await bot.send_message(chat_id=chat_id, text=text, reply_markup=keyboard, parse_mode="HTML")
+        if sent:
+            await asyncio.sleep(300)  # 5 min
+            try:
+                await sent.delete()
+            except Exception:
+                pass
+    except Exception as e:
+        log.warning(f"send_welcome_autodelete failed {chat_id}: {e}")
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  MAIN
