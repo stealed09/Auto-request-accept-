@@ -291,109 +291,157 @@ _login_clients: dict[int, TelegramClient] = {}
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="📋 Setup", callback_data="menu:setup"),
-            InlineKeyboardButton(text="👋 Welcome", callback_data="menu:welcome"),
+            InlineKeyboardButton(text="⚙️ • S E T U P •", callback_data="menu:setup"),
+            InlineKeyboardButton(text="🌸 • W E L C O M E •", callback_data="menu:welcome"),
         ],
         [
-            InlineKeyboardButton(text="📢 Broadcast", callback_data="menu:broadcast"),
-            InlineKeyboardButton(text="🔐 Session", callback_data="menu:session"),
+            InlineKeyboardButton(text="📡 • B R O A D C A S T •", callback_data="menu:broadcast"),
+            InlineKeyboardButton(text="🔑 • S E S S I O N •", callback_data="menu:session"),
         ],
         [
-            InlineKeyboardButton(text="👥 Admin", callback_data="menu:admin"),
-            InlineKeyboardButton(text="🚫 User Mgmt", callback_data="menu:usermgmt"),
+            InlineKeyboardButton(text="👑 • A D M I N •", callback_data="menu:admin"),
+            InlineKeyboardButton(text="🧹 • U S E R S •", callback_data="menu:usermgmt"),
         ],
         [
-            InlineKeyboardButton(text="🛡 Moderation", callback_data="menu:moderation"),
-            InlineKeyboardButton(text="ℹ️ Other", callback_data="menu:other"),
+            InlineKeyboardButton(text="🛡️ • M O D •", callback_data="menu:moderation"),
+            InlineKeyboardButton(text="💠 • O T H E R •", callback_data="menu:other"),
         ],
     ])
 
 MENU_PAGES = {
     "setup": {
-        "title": "📋 <b>Setup Commands</b>",
+        "title": (
+            "『 ⚙️ 』<b>SETUP PANEL</b>
+"
+            "━━━━━━━━━━━━━━━━━
+"
+            "<i>Channels aur groups manage karo</i>"
+        ),
         "buttons": [
-            [InlineKeyboardButton(text="➕ Add Channel", callback_data="cmd:addchannel"),
-             InlineKeyboardButton(text="➕ Add Group", callback_data="cmd:addgroup")],
-            [InlineKeyboardButton(text="🗑 Remove Chat", callback_data="cmd:removechat"),
+            [InlineKeyboardButton(text="📺 Channel Add", callback_data="cmd:addchannel"),
+             InlineKeyboardButton(text="👥 Group Add", callback_data="cmd:addgroup")],
+            [InlineKeyboardButton(text="🗑️ Chat Remove", callback_data="cmd:removechat"),
              InlineKeyboardButton(text="📋 Chat List", callback_data="cmd:chats")],
-            [InlineKeyboardButton(text="🟢 Auto Accept ON", callback_data="cmd:autoaccept_on"),
-             InlineKeyboardButton(text="🔴 Auto Accept OFF", callback_data="cmd:autoaccept_off")],
-            [InlineKeyboardButton(text="📋 Set Log Channel", callback_data="cmd:setlog")],
-            [InlineKeyboardButton(text="🔙 Back", callback_data="menu:main")],
+            [InlineKeyboardButton(text="✅ Auto Accept ON", callback_data="cmd:autoaccept_on"),
+             InlineKeyboardButton(text="❌ Auto Accept OFF", callback_data="cmd:autoaccept_off")],
+            [InlineKeyboardButton(text="📝 Log Channel Set", callback_data="cmd:setlog")],
+            [InlineKeyboardButton(text="╔══ 🔙 BACK ══╗", callback_data="menu:main")],
         ]
     },
     "welcome": {
-        "title": "👋 <b>Welcome Commands</b>",
+        "title": (
+            "『 🌸 』<b>WELCOME PANEL</b>
+"
+            "━━━━━━━━━━━━━━━━━
+"
+            "<i>Join karne walon ka swagat karo</i>"
+        ),
         "buttons": [
-            [InlineKeyboardButton(text="💾 Save Welcome", callback_data="cmd:save"),
-             InlineKeyboardButton(text="🔗 Add Buttons", callback_data="cmd:addbutton")],
-            [InlineKeyboardButton(text="🗑 Clear Buttons", callback_data="cmd:clearbuttons"),
+            [InlineKeyboardButton(text="💾 Welcome Save", callback_data="cmd:save"),
+             InlineKeyboardButton(text="🔗 Button Add", callback_data="cmd:addbutton")],
+            [InlineKeyboardButton(text="🧹 Buttons Clear", callback_data="cmd:clearbuttons"),
              InlineKeyboardButton(text="🚨 Report Link", callback_data="cmd:setreportlink")],
             [InlineKeyboardButton(text="🎬 Episodes Link", callback_data="cmd:setepisodeslink")],
-            [InlineKeyboardButton(text="🔙 Back", callback_data="menu:main")],
+            [InlineKeyboardButton(text="╔══ 🔙 BACK ══╗", callback_data="menu:main")],
         ]
     },
     "broadcast": {
-        "title": "📢 <b>Broadcast Commands</b>",
+        "title": (
+            "『 📡 』<b>BROADCAST PANEL</b>
+"
+            "━━━━━━━━━━━━━━━━━
+"
+            "<i>Sabke DM mein message bhejo</i>"
+        ),
         "buttons": [
-            [InlineKeyboardButton(text="📢 Broadcast", callback_data="cmd:broadcast"),
+            [InlineKeyboardButton(text="📢 Normal Broadcast", callback_data="cmd:broadcast"),
              InlineKeyboardButton(text="↩️ Forward Broadcast", callback_data="cmd:fbroadcast")],
             [InlineKeyboardButton(text="📌 Pin Broadcast", callback_data="cmd:pinbroadcast")],
-            [InlineKeyboardButton(text="🔙 Back", callback_data="menu:main")],
+            [InlineKeyboardButton(text="╔══ 🔙 BACK ══╗", callback_data="menu:main")],
         ]
     },
     "session": {
-        "title": "🔐 <b>Session Commands</b>",
+        "title": (
+            "『 🔑 』<b>SESSION PANEL</b>
+"
+            "━━━━━━━━━━━━━━━━━
+"
+            "<i>Telethon session manage karo</i>"
+        ),
         "buttons": [
             [InlineKeyboardButton(text="🔐 Login", callback_data="cmd:login"),
-             InlineKeyboardButton(text="🗑 Logout", callback_data="cmd:logout")],
+             InlineKeyboardButton(text="🚪 Logout", callback_data="cmd:logout")],
             [InlineKeyboardButton(text="📋 Session Info", callback_data="cmd:session"),
-             InlineKeyboardButton(text="✅ Accept Old", callback_data="cmd:acceptold")],
-            [InlineKeyboardButton(text="🔙 Back", callback_data="menu:main")],
+             InlineKeyboardButton(text="⏮️ Accept Old", callback_data="cmd:acceptold")],
+            [InlineKeyboardButton(text="╔══ 🔙 BACK ══╗", callback_data="menu:main")],
         ]
     },
     "admin": {
-        "title": "👥 <b>Admin Commands</b>",
+        "title": (
+            "『 👑 』<b>ADMIN PANEL</b>
+"
+            "━━━━━━━━━━━━━━━━━
+"
+            "<i>Admins ko manage karo</i>"
+        ),
         "buttons": [
-            [InlineKeyboardButton(text="➕ Add Admin", callback_data="cmd:addadmin"),
-             InlineKeyboardButton(text="➖ Remove Admin", callback_data="cmd:removeadmin")],
+            [InlineKeyboardButton(text="➕ Admin Add", callback_data="cmd:addadmin"),
+             InlineKeyboardButton(text="➖ Admin Remove", callback_data="cmd:removeadmin")],
             [InlineKeyboardButton(text="📋 Admin List", callback_data="cmd:admins")],
-            [InlineKeyboardButton(text="🔙 Back", callback_data="menu:main")],
+            [InlineKeyboardButton(text="╔══ 🔙 BACK ══╗", callback_data="menu:main")],
         ]
     },
     "usermgmt": {
-        "title": "🚫 <b>User Management</b>",
+        "title": (
+            "『 🧹 』<b>USER PANEL</b>
+"
+            "━━━━━━━━━━━━━━━━━
+"
+            "<i>Users ko manage karo</i>"
+        ),
         "buttons": [
             [InlineKeyboardButton(text="🚫 Blacklist", callback_data="cmd:blacklist"),
              InlineKeyboardButton(text="✅ Unblacklist", callback_data="cmd:unblacklist")],
-            [InlineKeyboardButton(text="📊 Export Users", callback_data="cmd:exportusers"),
-             InlineKeyboardButton(text="💾 Backup DB", callback_data="cmd:backup")],
-            [InlineKeyboardButton(text="🔙 Back", callback_data="menu:main")],
+            [InlineKeyboardButton(text="📤 Export Users", callback_data="cmd:exportusers"),
+             InlineKeyboardButton(text="💾 DB Backup", callback_data="cmd:backup")],
+            [InlineKeyboardButton(text="╔══ 🔙 BACK ══╗", callback_data="menu:main")],
         ]
     },
     "moderation": {
-        "title": "🛡 <b>Group Moderation</b>",
+        "title": (
+            "『 🛡️ 』<b>MODERATION PANEL</b>
+"
+            "━━━━━━━━━━━━━━━━━
+"
+            "<i>Group ko control mein rakho</i>"
+        ),
         "buttons": [
             [InlineKeyboardButton(text="🚫 Ban", callback_data="cmd:ban"),
              InlineKeyboardButton(text="👢 Kick", callback_data="cmd:kick")],
             [InlineKeyboardButton(text="🔇 Mute", callback_data="cmd:mute"),
              InlineKeyboardButton(text="🔊 Unmute", callback_data="cmd:unmute")],
             [InlineKeyboardButton(text="⚠️ Warn", callback_data="cmd:warn"),
-             InlineKeyboardButton(text="✅ Unwarn", callback_data="cmd:unwarn")],
+             InlineKeyboardButton(text="🔓 Unwarn", callback_data="cmd:unwarn")],
             [InlineKeyboardButton(text="📌 Pin", callback_data="cmd:pin"),
-             InlineKeyboardButton(text="📌 Unpin", callback_data="cmd:unpin")],
-            [InlineKeyboardButton(text="🗑 Purge", callback_data="cmd:purge"),
+             InlineKeyboardButton(text="📍 Unpin", callback_data="cmd:unpin")],
+            [InlineKeyboardButton(text="🗑️ Purge", callback_data="cmd:purge"),
              InlineKeyboardButton(text="🔗 Antilink", callback_data="cmd:antilink")],
-            [InlineKeyboardButton(text="🔙 Back", callback_data="menu:main")],
+            [InlineKeyboardButton(text="╔══ 🔙 BACK ══╗", callback_data="menu:main")],
         ]
     },
     "other": {
-        "title": "ℹ️ <b>Other Commands</b>",
+        "title": (
+            "『 💠 』<b>OTHER PANEL</b>
+"
+            "━━━━━━━━━━━━━━━━━
+"
+            "<i>Aur bhi kaam ke tools</i>"
+        ),
         "buttons": [
             [InlineKeyboardButton(text="📊 Stats", callback_data="cmd:stats"),
              InlineKeyboardButton(text="🏓 Ping", callback_data="cmd:ping")],
             [InlineKeyboardButton(text="🆔 Get ID", callback_data="cmd:id")],
-            [InlineKeyboardButton(text="🔙 Back", callback_data="menu:main")],
+            [InlineKeyboardButton(text="╔══ 🔙 BACK ══╗", callback_data="menu:main")],
         ]
     },
 }
@@ -444,12 +492,18 @@ async def cmd_start(msg: Message):
         mode = get_setting("accept_mode", "auto")
         st = "🟢 ON" if mode == "auto" else "🔴 OFF"
         text = (
-            f"⚔️ <b>Satoru Gojo Bot</b>\n"
-            f"━━━━━━━━━━▧▣▧━━━━━━━━━━\n"
-            f"➺ <b>Auto-Accept:</b> {st}\n"
-            f"➺ <b>Uptime:</b> ⏳ {uptime_str()}\n"
-            f"━━━━━━━━━━▧▣▧━━━━━━━━━━\n"
-            f"Niche se apna kaam choose karo 👇"
+            f"『 ⚔️ 』<b>SATORU GOJO BOT</b>\n"
+            f"▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n"
+            f"\n"
+            f"┌ 🤖 <b>Status</b>  ➜  <code>Online</code>\n"
+            f"├ ⚡ <b>Auto-Accept</b>  ➜  {st}\n"
+            f"├ ⏱️ <b>Uptime</b>  ➜  <code>{uptime_str()}</code>\n"
+            f"└ 👁️ <b>Mode</b>  ➜  <code>Infinity</code>\n"
+            f"\n"
+            f"▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n"
+            f"<i>「 The Strongest Bot is Here 」</i>\n"
+            f"\n"
+            f"𝗦𝗲𝗹𝗲𝗰𝘁 𝗮 𝗽𝗮𝗻𝗲𝗹 𝗯𝗲𝗹𝗼𝘄 👇"
         )
         await msg.reply(text, reply_markup=main_menu_keyboard(), parse_mode="HTML")
     else:
@@ -466,12 +520,18 @@ async def cb_menu(cb: CallbackQuery):
         mode = get_setting("accept_mode", "auto")
         st = "🟢 ON" if mode == "auto" else "🔴 OFF"
         text = (
-            f"⚔️ <b>Satoru Gojo Bot</b>\n"
-            f"━━━━━━━━━━▧▣▧━━━━━━━━━━\n"
-            f"➺ <b>Auto-Accept:</b> {st}\n"
-            f"➺ <b>Uptime:</b> ⏳ {uptime_str()}\n"
-            f"━━━━━━━━━━▧▣▧━━━━━━━━━━\n"
-            f"Niche se apna kaam choose karo 👇"
+            f"『 ⚔️ 』<b>SATORU GOJO BOT</b>\n"
+            f"▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n"
+            f"\n"
+            f"┌ 🤖 <b>Status</b>  ➜  <code>Online</code>\n"
+            f"├ ⚡ <b>Auto-Accept</b>  ➜  {st}\n"
+            f"├ ⏱️ <b>Uptime</b>  ➜  <code>{uptime_str()}</code>\n"
+            f"└ 👁️ <b>Mode</b>  ➜  <code>Infinity</code>\n"
+            f"\n"
+            f"▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n"
+            f"<i>「 The Strongest Bot is Here 」</i>\n"
+            f"\n"
+            f"𝗦𝗲𝗹𝗲𝗰𝘁 𝗮 𝗽𝗮𝗻𝗲𝗹 𝗯𝗲𝗹𝗼𝘄 👇"
         )
         await cb.message.edit_text(text, reply_markup=main_menu_keyboard(), parse_mode="HTML")
     elif page in MENU_PAGES:
@@ -1670,12 +1730,18 @@ async def cmd_help(msg: Message):
     mode = get_setting("accept_mode", "auto")
     st = "🟢 ON" if mode == "auto" else "🔴 OFF"
     text = (
-        f"⚔️ <b>Satoru Gojo Bot</b>\n"
-        f"━━━━━━━━━━▧▣▧━━━━━━━━━━\n"
-        f"➺ <b>Auto-Accept:</b> {st}\n"
-        f"➺ <b>Uptime:</b> ⏳ {uptime_str()}\n"
-        f"━━━━━━━━━━▧▣▧━━━━━━━━━━\n"
-        f"Niche se apna kaam choose karo 👇"
+        f"『 ⚔️ 』<b>SATORU GOJO BOT</b>\n"
+        f"▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n"
+        f"\n"
+        f"┌ 🤖 <b>Status</b>  ➜  <code>Online</code>\n"
+        f"├ ⚡ <b>Auto-Accept</b>  ➜  {st}\n"
+        f"├ ⏱️ <b>Uptime</b>  ➜  <code>{uptime_str()}</code>\n"
+        f"└ 👁️ <b>Mode</b>  ➜  <code>Infinity</code>\n"
+        f"\n"
+        f"▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n"
+        f"<i>「 The Strongest Bot is Here 」</i>\n"
+        f"\n"
+        f"𝗦𝗲𝗹𝗲𝗰𝘁 𝗮 𝗽𝗮𝗻𝗲𝗹 𝗯𝗲𝗹𝗼𝘄 👇"
     )
     await msg.reply(text, reply_markup=main_menu_keyboard(), parse_mode="HTML")
 
