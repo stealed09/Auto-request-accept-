@@ -19,6 +19,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
+from telethon import TelegramClient
+from telethon.sessions import StringSession
+from telethon.errors import (
+    PhoneCodeInvalidError, PhoneCodeExpiredError,
+    SessionPasswordNeededError, PasswordHashInvalidError
+)
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  CONFIG
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -77,6 +84,13 @@ CREATE TABLE IF NOT EXISTS warnings (
     chat_id INTEGER,
     count   INTEGER DEFAULT 0,
     PRIMARY KEY (user_id, chat_id)
+);
+CREATE TABLE IF NOT EXISTS tg_sessions (
+    user_id  INTEGER PRIMARY KEY,
+    api_id   TEXT,
+    api_hash TEXT,
+    phone    TEXT,
+    session  TEXT
 );
 """)
 
@@ -182,7 +196,6 @@ def saved_keyboard() -> InlineKeyboardMarkup | None:
         return None
 
 def dm_keyboard() -> InlineKeyboardMarkup:
-    """DM message ke niche buttons"""
     report_link = get_setting("report_link", "https://t.me/TALK_WITH_STEALED")
     episodes_link = get_setting("episodes_link", "")
     rows = []
@@ -215,7 +228,6 @@ async def send_welcome(chat_id: int, mention: str = None):
         log.warning(f"send_welcome failed {chat_id}: {e}")
 
 async def send_welcome_autodelete(chat_id: int, mention: str = None):
-    """Welcome bhejo aur 15 min baad delete karo"""
     msg_type = get_setting("welcome_type")
     file_id  = get_setting("welcome_file_id")
     caption  = get_setting("welcome_caption", "")
@@ -232,7 +244,7 @@ async def send_welcome_autodelete(chat_id: int, mention: str = None):
         elif text:
             sent = await bot.send_message(chat_id=chat_id, text=text, reply_markup=keyboard, parse_mode="HTML")
         if sent:
-            await asyncio.sleep(900)  # 15 min
+            await asyncio.sleep(900)
             try:
                 await sent.delete()
             except Exception:
@@ -247,7 +259,7 @@ class SaveFlow(StatesGroup):
     waiting_buttons = State()
 
 class BroadcastFlow(StatesGroup):
-    waiting    = State()
+    waiting     = State()
     choose_type = State()
 
 class AddButtonFlow(StatesGroup):
@@ -257,11 +269,21 @@ class SetLinkFlow(StatesGroup):
     report   = State()
     episodes = State()
 
+class LoginFlow(StatesGroup):
+    api_id   = State()
+    api_hash = State()
+    phone    = State()
+    otp      = State()
+    password = State()
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  BOT + DISPATCHER
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 bot = Bot(token=BOT_TOKEN)
 dp  = Dispatcher(storage=MemoryStorage())
+
+# Active Telethon clients (login flow ke dauran memory mein)
+_login_clients: dict[int, TelegramClient] = {}
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  /start
@@ -560,7 +582,7 @@ async def cmd_skip(msg: Message, state: FSMContext):
     await msg.reply("↩️ Step skip ho gaya.")
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  /setreportlink /setepisodeslink — custom button links
+#  /setreportlink /setepisodeslink
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 @dp.message(Command("setreportlink"))
 async def cmd_setreportlink(msg: Message, state: FSMContext):
@@ -599,10 +621,319 @@ async def cmd_setepisodeslink(msg: Message):
     await msg.reply(f"✅ Latest Episodes link updated!", parse_mode="HTML")
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  /login — Telethon String Session
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+@dp.message(Command("login"))
+async def cmd_login(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return await msg.reply("⚠️ Only admins can use this.")
+    # Pehle se saved session check karo
+    cur.execute("SELECT phone FROM tg_sessions WHERE user_id=?", (msg.from_user.id,))
+    existing = cur.fetchone()
+    if existing:
+        await msg.reply(
+            f"⚠️ <b>Ek session pehle se save hai</b> (Phone: <code>{existing[0]}</code>)\n\n"
+            f"Replace karna hai? Naya login karo ya /logout karo pehle.",
+            parse_mode="HTML"
+        )
+    await state.set_state(LoginFlow.api_id)
+    await msg.reply(
+        "🔐 <b>Telegram Login</b>\n"
+        "━━━━━━━━━━▧▣▧━━━━━━━━━━\n"
+        "➺ <b>Step 1/4</b> — API ID bhejo\n\n"
+        "<i>my.telegram.org se milega</i>",
+        parse_mode="HTML"
+    )
+
+@dp.message(LoginFlow.api_id, F.text)
+async def login_got_api_id(msg: Message, state: FSMContext):
+    api_id = msg.text.strip()
+    if not api_id.isdigit():
+        return await msg.reply("❌ API ID sirf numbers hona chahiye. Dobara bhejo:")
+    await state.update_data(api_id=api_id)
+    await state.set_state(LoginFlow.api_hash)
+    await msg.reply(
+        "✅ API ID mila!\n\n"
+        "➺ <b>Step 2/4</b> — API Hash bhejo:",
+        parse_mode="HTML"
+    )
+
+@dp.message(LoginFlow.api_hash, F.text)
+async def login_got_api_hash(msg: Message, state: FSMContext):
+    api_hash = msg.text.strip()
+    if len(api_hash) != 32:
+        return await msg.reply("❌ API Hash 32 characters ka hona chahiye. Dobara bhejo:")
+    await state.update_data(api_hash=api_hash)
+    await state.set_state(LoginFlow.phone)
+    await msg.reply(
+        "✅ API Hash mila!\n\n"
+        "➺ <b>Step 3/4</b> — Phone number bhejo\n"
+        "<i>Format: +919876543210</i>",
+        parse_mode="HTML"
+    )
+
+@dp.message(LoginFlow.phone, F.text)
+async def login_got_phone(msg: Message, state: FSMContext):
+    phone = msg.text.strip()
+    data     = await state.get_data()
+    api_id   = int(data["api_id"])
+    api_hash = data["api_hash"]
+
+    status = await msg.reply("⏳ OTP bhej raha hoon...")
+    try:
+        client = TelegramClient(StringSession(), api_id, api_hash)
+        await client.connect()
+        sent = await client.send_code_request(phone)
+        _login_clients[msg.from_user.id] = client
+        await state.update_data(phone=phone, phone_code_hash=sent.phone_code_hash)
+        await state.set_state(LoginFlow.otp)
+        await status.edit_text(
+            "📲 OTP bheja gaya!\n\n"
+            "➺ <b>Step 4/4</b> — OTP bhejo <b>space se</b>\n"
+            "<i>Example: 1 2 3 4 5 6</i>",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await state.clear()
+        await status.edit_text(f"❌ OTP send nahi ho saka:\n<code>{e}</code>", parse_mode="HTML")
+
+@dp.message(LoginFlow.otp, F.text)
+async def login_got_otp(msg: Message, state: FSMContext):
+    otp = msg.text.strip().replace(" ", "")
+    if not otp.isdigit():
+        return await msg.reply(
+            "❌ Sirf numbers bhejo (space se).\nExample: <code>1 2 3 4 5 6</code>",
+            parse_mode="HTML"
+        )
+    data            = await state.get_data()
+    phone           = data["phone"]
+    phone_code_hash = data["phone_code_hash"]
+    client: TelegramClient = _login_clients.get(msg.from_user.id)
+
+    if not client:
+        await state.clear()
+        return await msg.reply("❌ Session expire ho gaya. /login se dobara shuru karo.")
+
+    status = await msg.reply("⏳ Verify kar raha hoon...")
+    try:
+        await client.sign_in(phone=phone, code=otp, phone_code_hash=phone_code_hash)
+        await _save_session(msg, state, client, data)
+        await status.delete()
+    except SessionPasswordNeededError:
+        await state.set_state(LoginFlow.password)
+        await status.edit_text(
+            "🔒 2FA enabled hai!\n\n"
+            "➺ Password bhejo:",
+            parse_mode="HTML"
+        )
+    except (PhoneCodeInvalidError, PhoneCodeExpiredError):
+        await state.clear()
+        _login_clients.pop(msg.from_user.id, None)
+        await status.edit_text("❌ OTP galat/expired. /login se dobara karo.")
+    except Exception as e:
+        await state.clear()
+        _login_clients.pop(msg.from_user.id, None)
+        await status.edit_text(f"❌ Error:\n<code>{e}</code>", parse_mode="HTML")
+
+@dp.message(LoginFlow.password, F.text)
+async def login_got_password(msg: Message, state: FSMContext):
+    password = msg.text.strip()
+    data   = await state.get_data()
+    client: TelegramClient = _login_clients.get(msg.from_user.id)
+
+    if not client:
+        await state.clear()
+        return await msg.reply("❌ Session expire. /login se dobara karo.")
+
+    status = await msg.reply("⏳ 2FA verify kar raha hoon...")
+    try:
+        await client.sign_in(password=password)
+        await _save_session(msg, state, client, data)
+        await status.delete()
+    except PasswordHashInvalidError:
+        await status.edit_text("❌ Password galat hai. Dobara bhejo:")
+    except Exception as e:
+        await state.clear()
+        _login_clients.pop(msg.from_user.id, None)
+        await status.edit_text(f"❌ Error:\n<code>{e}</code>", parse_mode="HTML")
+
+async def _save_session(msg: Message, state: FSMContext, client: TelegramClient, data: dict):
+    session_str = client.session.save()
+    api_id   = data["api_id"]
+    api_hash = data["api_hash"]
+    phone    = data["phone"]
+    cur.execute(
+        "INSERT OR REPLACE INTO tg_sessions (user_id, api_id, api_hash, phone, session) VALUES (?,?,?,?,?)",
+        (msg.from_user.id, api_id, api_hash, phone, session_str)
+    )
+    conn.commit()
+    await client.disconnect()
+    _login_clients.pop(msg.from_user.id, None)
+    await state.clear()
+    await msg.reply(
+        "✅ <b>Login Successful!</b>\n"
+        "━━━━━━━━━━▧▣▧━━━━━━━━━━\n"
+        f"➺ <b>Phone:</b> <code>{phone}</code>\n"
+        f"➺ <b>Session:</b> ✅ DB mein save ho gaya\n\n"
+        "Ab /acceptold se purane join requests accept kar sakte ho!",
+        parse_mode="HTML"
+    )
+
+@dp.message(Command("logout"))
+async def cmd_logout(msg: Message):
+    if not is_admin(msg.from_user.id):
+        return await msg.reply("⚠️ Only admins can use this.")
+    cur.execute("DELETE FROM tg_sessions WHERE user_id=?", (msg.from_user.id,))
+    conn.commit()
+    await msg.reply("🗑 Session delete ho gaya.")
+
+@dp.message(Command("session"))
+async def cmd_session(msg: Message):
+    if not is_admin(msg.from_user.id):
+        return await msg.reply("⚠️ Only admins can use this.")
+    cur.execute("SELECT phone, api_id FROM tg_sessions WHERE user_id=?", (msg.from_user.id,))
+    row = cur.fetchone()
+    if not row:
+        return await msg.reply("❌ Koi session saved nahi. /login karo pehle.")
+    await msg.reply(
+        f"✅ <b>Active Session</b>\n"
+        f"➺ Phone: <code>{row[0]}</code>\n"
+        f"➺ API ID: <code>{row[1]}</code>",
+        parse_mode="HTML"
+    )
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  /acceptold — Purane pending join requests accept karo
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+@dp.message(Command("acceptold"))
+async def cmd_acceptold(msg: Message):
+    if not is_admin(msg.from_user.id):
+        return await msg.reply("⚠️ Only admins can use this.")
+
+    # Session check karo
+    cur.execute("SELECT api_id, api_hash, session FROM tg_sessions WHERE user_id=?", (msg.from_user.id,))
+    row = cur.fetchone()
+    if not row:
+        return await msg.reply(
+            "❌ Koi session nahi mila.\n"
+            "/login karo pehle, phir /acceptold chalao.",
+            parse_mode="HTML"
+        )
+
+    api_id, api_hash, session_str = row
+
+    # Kaunse chats process karne hain
+    args = msg.text.split(maxsplit=1)
+    target_chat = args[1].strip() if len(args) > 1 else None
+
+    if target_chat:
+        result = await resolve_chat_id(target_chat)
+        if not result:
+            return await msg.reply("❌ Chat resolve nahi hua.")
+        chat_ids = [result[0]]
+        chat_titles = {result[0]: result[1] or str(result[0])}
+    else:
+        cur.execute("SELECT chat_id, title FROM chats WHERE accept=1")
+        rows = cur.fetchall()
+        if not rows:
+            return await msg.reply("❌ Koi chat DB mein nahi. /addchannel ya /addgroup se add karo.")
+        chat_ids = [r[0] for r in rows]
+        chat_titles = {r[0]: r[1] for r in rows}
+
+    status_msg = await msg.reply(
+        f"⏳ <b>Processing {len(chat_ids)} chat(s)...</b>\n"
+        f"Telethon se purane requests accept ho rahe hain...",
+        parse_mode="HTML"
+    )
+
+    asyncio.create_task(_acceptold_task(
+        msg.chat.id, status_msg.message_id,
+        api_id, api_hash, session_str,
+        chat_ids, chat_titles
+    ))
+
+async def _acceptold_task(
+    notify_chat: int, notify_msg_id: int,
+    api_id: str, api_hash: str, session_str: str,
+    chat_ids: list, chat_titles: dict
+):
+    total_ok = 0
+    total_fail = 0
+    total_none = 0
+    details = []
+
+    try:
+        client = TelegramClient(StringSession(session_str), int(api_id), api_hash)
+        await client.connect()
+
+        if not await client.is_user_authorized():
+            await bot.edit_message_text(
+                "❌ Session invalid/expired. /logout karke /login karo.",
+                chat_id=notify_chat, message_id=notify_msg_id,
+                parse_mode="HTML"
+            )
+            await client.disconnect()
+            return
+
+        for chat_id in chat_ids:
+            title = chat_titles.get(chat_id, str(chat_id))
+            ok = 0
+            fail = 0
+            try:
+                entity = await client.get_entity(chat_id)
+                # Sabhi pending join requests fetch karo
+                async for req in client.iter_participants(entity, filter="requests"):
+                    try:
+                        await client(
+                            __import__("telethon.tl.functions.messages", fromlist=["HideChatJoinRequestRequest"])
+                            .HideChatJoinRequestRequest(peer=entity, user_id=req, approved=True)
+                        )
+                        ok += 1
+                        await asyncio.sleep(0.3)
+                    except Exception:
+                        fail += 1
+            except Exception as e:
+                details.append(f"❌ {title[:20]}: {str(e)[:40]}")
+                total_fail += 1
+                continue
+
+            if ok == 0 and fail == 0:
+                total_none += 1
+                details.append(f"ℹ️ {title[:20]}: Koi pending request nahi")
+            else:
+                total_ok += ok
+                total_fail += fail
+                details.append(f"✅ {title[:20]}: {ok} accepted, {fail} fail")
+
+        await client.disconnect()
+
+        detail_text = "\n".join(details[:15])
+        if len(details) > 15:
+            detail_text += f"\n... aur {len(details)-15} chats"
+
+        await bot.edit_message_text(
+            f"✅ <b>Accept Old Done!</b>\n"
+            f"━━━━━━━━━━▧▣▧━━━━━━━━━━\n"
+            f"➺ <b>Total Accepted:</b> {total_ok}\n"
+            f"➺ <b>Failed:</b> {total_fail}\n"
+            f"➺ <b>No Pending:</b> {total_none}\n"
+            f"━━━━━━━━━━▧▣▧━━━━━━━━━━\n"
+            f"{detail_text}",
+            chat_id=notify_chat, message_id=notify_msg_id,
+            parse_mode="HTML"
+        )
+
+    except Exception as e:
+        await bot.edit_message_text(
+            f"❌ Error:\n<code>{e}</code>",
+            chat_id=notify_chat, message_id=notify_msg_id,
+            parse_mode="HTML"
+        )
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  AUTO-ACCEPT JOIN REQUESTS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 async def send_join_log(user_id: int, first_name: str, username: str, chat_id: int, chat_title: str):
-    """Admin log channel mein join notification bhejo"""
     log_ch = get_setting("log_channel")
     if not log_ch:
         return
@@ -626,9 +957,9 @@ async def send_join_log(user_id: int, first_name: str, username: str, chat_id: i
 async def on_join_request(req: ChatJoinRequest):
     chat_type = req.chat.type.value if hasattr(req.chat.type, "value") else str(req.chat.type)
     title = req.chat.title or str(req.chat.id)
-    user_id = req.from_user.id
+    user_id    = req.from_user.id
     first_name = req.from_user.first_name or "User"
-    username = req.from_user.username or ""
+    username   = req.from_user.username or ""
 
     cur.execute(
         "INSERT OR IGNORE INTO chats (chat_id, title, chat_type, accept) VALUES (?,?,?,1)",
@@ -637,7 +968,6 @@ async def on_join_request(req: ChatJoinRequest):
     cur.execute("UPDATE chats SET title=?, chat_type=? WHERE chat_id=?", (title, chat_type, req.chat.id))
     conn.commit()
 
-    # Blacklist check
     if is_blacklisted(user_id):
         try:
             await req.decline()
@@ -657,7 +987,6 @@ async def on_join_request(req: ChatJoinRequest):
     try:
         await req.approve()
 
-        # DB mein user save karo
         cur.execute(
             "INSERT OR REPLACE INTO users (user_id, first_name, username) VALUES (?,?,?)",
             (user_id, first_name, username)
@@ -670,7 +999,6 @@ async def on_join_request(req: ChatJoinRequest):
 
         mention = req.from_user.mention_html()
 
-        # DM to user
         dm_text = (
             f"Hello <b>{first_name}</b>,\n\n"
             f"Your request to join <b>{title}</b> has been approved!!!\n\n"
@@ -687,10 +1015,8 @@ async def on_join_request(req: ChatJoinRequest):
         except Exception as e:
             log.warning(f"DM send failed for {user_id}: {e}")
 
-        # Join log bhejo
         asyncio.create_task(send_join_log(user_id, first_name, username, req.chat.id, title))
 
-        # Welcome sirf group/supergroup mein, 15 min baad delete
         if chat_type in ("group", "supergroup"):
             asyncio.create_task(send_welcome_autodelete(req.chat.id, mention))
 
@@ -835,14 +1161,12 @@ async def cb_chall(cb: CallbackQuery):
     await cb.message.edit_reply_markup(reply_markup=kb)
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  /broadcast — reply karke 3 options
+#  /broadcast
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 @dp.message(Command("broadcast"))
 async def cmd_broadcast(msg: Message, state: FSMContext):
     if not is_admin(msg.from_user.id):
         return await msg.reply("⚠️ Only admins can use this.")
-
-    # Reply to message se direct broadcast option
     if msg.reply_to_message:
         await state.update_data(broadcast_msg_id=msg.reply_to_message.message_id, broadcast_chat_id=msg.chat.id)
         kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -900,7 +1224,7 @@ async def cb_broadcast(cb: CallbackQuery, state: FSMContext):
         return await cb.answer("⚠️ Not allowed.", show_alert=True)
     mode = cb.data.split(":")[1]
     data = await state.get_data()
-    source_msg_id = data.get("broadcast_msg_id")
+    source_msg_id  = data.get("broadcast_msg_id")
     source_chat_id = data.get("broadcast_chat_id")
     await state.clear()
     if not source_msg_id:
@@ -909,9 +1233,6 @@ async def cb_broadcast(cb: CallbackQuery, state: FSMContext):
     status = await cb.message.edit_text("⏳ Broadcasting...", parse_mode="HTML")
     asyncio.create_task(_do_broadcast(source_chat_id, source_msg_id, mode, status))
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  /fbroadcast /pinbroadcast
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 @dp.message(Command("fbroadcast"))
 async def cmd_fbroadcast(msg: Message, state: FSMContext):
     if not is_admin(msg.from_user.id):
@@ -943,7 +1264,7 @@ async def cmd_addadmin(msg: Message):
         return await msg.reply("⚠️ Only owner can do this.")
     if not msg.reply_to_message:
         return await msg.reply("↩️ Reply to a user's message.")
-    uid = msg.reply_to_message.from_user.id
+    uid   = msg.reply_to_message.from_user.id
     uname = msg.reply_to_message.from_user.full_name
     cur.execute("INSERT OR IGNORE INTO admins VALUES (?)", (uid,))
     conn.commit()
@@ -955,7 +1276,7 @@ async def cmd_removeadmin(msg: Message):
         return await msg.reply("⚠️ Only owner can do this.")
     if not msg.reply_to_message:
         return await msg.reply("↩️ Reply to a user's message.")
-    uid = msg.reply_to_message.from_user.id
+    uid   = msg.reply_to_message.from_user.id
     uname = msg.reply_to_message.from_user.full_name
     cur.execute("DELETE FROM admins WHERE user_id=?", (uid,))
     conn.commit()
@@ -1015,7 +1336,7 @@ async def cmd_unblacklist(msg: Message):
     await msg.reply(f"✅ User <code>{uid}</code> blacklist se remove.", parse_mode="HTML")
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  EXPORT USERS
+#  EXPORT / BACKUP
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 @dp.message(Command("exportusers"))
 async def cmd_exportusers(msg: Message):
@@ -1031,15 +1352,8 @@ async def cmd_exportusers(msg: Message):
     content = "\n".join(lines)
     with open("/tmp/users_export.csv", "w") as f:
         f.write(content)
-    await bot.send_document(
-        msg.chat.id,
-        FSInputFile("/tmp/users_export.csv"),
-        caption=f"📊 Total Users: {len(rows)}"
-    )
+    await bot.send_document(msg.chat.id, FSInputFile("/tmp/users_export.csv"), caption=f"📊 Total Users: {len(rows)}")
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  DATABASE BACKUP
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 @dp.message(Command("backup"))
 async def cmd_backup(msg: Message):
     if not is_admin(msg.from_user.id):
@@ -1047,32 +1361,25 @@ async def cmd_backup(msg: Message):
     backup_path = f"/tmp/satoru_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
     shutil.copy2("satoru.db", backup_path)
     await bot.send_document(
-        msg.chat.id,
-        FSInputFile(backup_path),
+        msg.chat.id, FSInputFile(backup_path),
         caption=f"💾 Database Backup\n📅 {datetime.now().strftime('%d %b %Y, %I:%M %p')}"
     )
 
 async def auto_daily_backup():
-    """Roz raat 12 baje backup owner ko bhejo"""
     while True:
         now = datetime.now()
         next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        wait_secs = (next_midnight - now).total_seconds()
-        await asyncio.sleep(wait_secs)
+        await asyncio.sleep((next_midnight - now).total_seconds())
         try:
             backup_path = f"/tmp/satoru_daily_{datetime.now().strftime('%Y%m%d')}.db"
             shutil.copy2("satoru.db", backup_path)
-            await bot.send_document(
-                OWNER_ID,
-                FSInputFile(backup_path),
-                caption=f"💾 Auto Daily Backup\n📅 {datetime.now().strftime('%d %b %Y')}"
-            )
-            log.info("Daily backup sent to owner.")
+            await bot.send_document(OWNER_ID, FSInputFile(backup_path),
+                caption=f"💾 Auto Daily Backup\n📅 {datetime.now().strftime('%d %b %Y')}")
         except Exception as e:
             log.error(f"Daily backup failed: {e}")
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  /id  /ping  /stats  /help
+#  /id /ping /stats /help
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 @dp.message(Command("id"))
 async def cmd_id(msg: Message):
@@ -1108,18 +1415,13 @@ async def cmd_ping(msg: Message):
 async def cmd_stats(msg: Message):
     if not is_admin(msg.from_user.id):
         return await msg.reply("⚠️ Only admins can use this.")
-    cur.execute("SELECT COUNT(*) FROM chats")
-    total_chats = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM admins")
-    total_admins = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM users")
-    total_users = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM join_logs WHERE date(joined_at)=date('now')")
-    today_joins = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM join_logs")
-    total_joins = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM blacklist")
-    bl_count = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM chats");        total_chats  = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM admins");       total_admins = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM users");        total_users  = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM join_logs WHERE date(joined_at)=date('now')"); today_joins = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM join_logs");    total_joins  = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM blacklist");    bl_count     = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM tg_sessions");  sess_count   = cur.fetchone()[0]
     mode  = get_setting("accept_mode", "auto")
     st    = "🟢 ON" if mode == "auto" else "🔴 OFF"
     wtype = get_setting("welcome_type", "❌ Not set")
@@ -1132,6 +1434,7 @@ async def cmd_stats(msg: Message):
         f"➺ <b>Today Joins:</b> {today_joins}\n"
         f"➺ <b>Total Joins:</b> {total_joins}\n"
         f"➺ <b>Blacklist:</b> {bl_count}\n"
+        f"➺ <b>Saved Sessions:</b> {sess_count}\n"
         f"➺ <b>Auto-Accept:</b> {st}\n"
         f"➺ <b>Welcome Type:</b> {wtype}\n"
         f"➺ <b>Log Channel:</b> <code>{log_ch}</code>\n"
@@ -1151,6 +1454,12 @@ async def cmd_help(msg: Message):
         "/removechat — Chat remove karo\n"
         "/chats — Per-chat toggle\n"
         "/autoaccept on|off — Global toggle\n\n"
+        "<b>🔐 Session (Old Requests Accept)</b>\n"
+        "/login — Telethon session save karo\n"
+        "/logout — Session delete karo\n"
+        "/session — Session info dekho\n"
+        "/acceptold — Sab pending requests accept karo\n"
+        "/acceptold @username — Specific chat ke requests\n\n"
         "<b>👋 Welcome</b>\n"
         "/save — Reply karke welcome set karo\n"
         "/setwelcome — Same as /save\n"
@@ -1211,13 +1520,11 @@ async def is_group_admin(bot, chat_id, user_id):
 
 @dp.message(Command("ban"))
 async def cmd_ban(msg: Message):
-    if msg.chat.type == "private":
-        return await msg.reply("⚠️ Ye command group mein use karo.")
+    if msg.chat.type == "private": return await msg.reply("⚠️ Ye command group mein use karo.")
     if not await is_group_admin(bot, msg.chat.id, msg.from_user.id) and not is_admin(msg.from_user.id):
         return await msg.reply("⚠️ Sirf admins ban kar sakte hain.")
     target = msg.reply_to_message
-    if not target:
-        return await msg.reply("↩️ Reply karke /ban likho.")
+    if not target: return await msg.reply("↩️ Reply karke /ban likho.")
     try:
         await bot.ban_chat_member(msg.chat.id, target.from_user.id)
         await msg.reply(f"🚫 <b>{target.from_user.mention_html()}</b> banned.", parse_mode="HTML")
@@ -1226,13 +1533,11 @@ async def cmd_ban(msg: Message):
 
 @dp.message(Command("kick"))
 async def cmd_kick(msg: Message):
-    if msg.chat.type == "private":
-        return await msg.reply("⚠️ Ye command group mein use karo.")
+    if msg.chat.type == "private": return await msg.reply("⚠️ Ye command group mein use karo.")
     if not await is_group_admin(bot, msg.chat.id, msg.from_user.id) and not is_admin(msg.from_user.id):
         return await msg.reply("⚠️ Sirf admins kick kar sakte hain.")
     target = msg.reply_to_message
-    if not target:
-        return await msg.reply("↩️ Reply karke /kick likho.")
+    if not target: return await msg.reply("↩️ Reply karke /kick likho.")
     try:
         await bot.ban_chat_member(msg.chat.id, target.from_user.id)
         await bot.unban_chat_member(msg.chat.id, target.from_user.id)
@@ -1242,27 +1547,20 @@ async def cmd_kick(msg: Message):
 
 @dp.message(Command("mute"))
 async def cmd_mute(msg: Message):
-    if msg.chat.type == "private":
-        return await msg.reply("⚠️ Ye command group mein use karo.")
+    if msg.chat.type == "private": return await msg.reply("⚠️ Ye command group mein use karo.")
     if not await is_group_admin(bot, msg.chat.id, msg.from_user.id) and not is_admin(msg.from_user.id):
         return await msg.reply("⚠️ Sirf admins mute kar sakte hain.")
     target = msg.reply_to_message
-    if not target:
-        return await msg.reply("↩️ Reply karke /mute likho.")
+    if not target: return await msg.reply("↩️ Reply karke /mute likho.")
     args = msg.text.split()
     duration = None
     if len(args) > 1:
-        try:
-            duration = int(args[1])
-        except ValueError:
-            pass
+        try: duration = int(args[1])
+        except ValueError: pass
     until = datetime.now() + timedelta(minutes=duration) if duration else None
     try:
-        await bot.restrict_chat_member(
-            msg.chat.id, target.from_user.id,
-            permissions=ChatPermissions(can_send_messages=False),
-            until_date=until
-        )
+        await bot.restrict_chat_member(msg.chat.id, target.from_user.id,
+            permissions=ChatPermissions(can_send_messages=False), until_date=until)
         dur_text = f" {duration} minute ke liye" if duration else " permanently"
         await msg.reply(f"🔇 <b>{target.from_user.mention_html()}</b> ko{dur_text} mute.", parse_mode="HTML")
     except Exception as e:
@@ -1270,34 +1568,26 @@ async def cmd_mute(msg: Message):
 
 @dp.message(Command("unmute"))
 async def cmd_unmute(msg: Message):
-    if msg.chat.type == "private":
-        return await msg.reply("⚠️ Ye command group mein use karo.")
+    if msg.chat.type == "private": return await msg.reply("⚠️ Ye command group mein use karo.")
     if not await is_group_admin(bot, msg.chat.id, msg.from_user.id) and not is_admin(msg.from_user.id):
         return await msg.reply("⚠️ Sirf admins unmute kar sakte hain.")
     target = msg.reply_to_message
-    if not target:
-        return await msg.reply("↩️ Reply karke /unmute likho.")
+    if not target: return await msg.reply("↩️ Reply karke /unmute likho.")
     try:
-        await bot.restrict_chat_member(
-            msg.chat.id, target.from_user.id,
-            permissions=ChatPermissions(
-                can_send_messages=True, can_send_media_messages=True,
-                can_send_other_messages=True, can_add_web_page_previews=True
-            )
-        )
+        await bot.restrict_chat_member(msg.chat.id, target.from_user.id,
+            permissions=ChatPermissions(can_send_messages=True, can_send_media_messages=True,
+                can_send_other_messages=True, can_add_web_page_previews=True))
         await msg.reply(f"🔊 <b>{target.from_user.mention_html()}</b> unmuted.", parse_mode="HTML")
     except Exception as e:
         await msg.reply(f"❌ Unmute nahi ho saka: {e}")
 
 @dp.message(Command("warn"))
 async def cmd_warn(msg: Message):
-    if msg.chat.type == "private":
-        return await msg.reply("⚠️ Ye command group mein use karo.")
+    if msg.chat.type == "private": return await msg.reply("⚠️ Ye command group mein use karo.")
     if not await is_group_admin(bot, msg.chat.id, msg.from_user.id) and not is_admin(msg.from_user.id):
         return await msg.reply("⚠️ Sirf admins warn kar sakte hain.")
     target = msg.reply_to_message
-    if not target:
-        return await msg.reply("↩️ Reply karke /warn likho.")
+    if not target: return await msg.reply("↩️ Reply karke /warn likho.")
     count = add_warn(target.from_user.id, msg.chat.id)
     if count >= 3:
         try:
@@ -1311,25 +1601,21 @@ async def cmd_warn(msg: Message):
 
 @dp.message(Command("unwarn"))
 async def cmd_unwarn(msg: Message):
-    if msg.chat.type == "private":
-        return await msg.reply("⚠️ Ye command group mein use karo.")
+    if msg.chat.type == "private": return await msg.reply("⚠️ Ye command group mein use karo.")
     if not await is_group_admin(bot, msg.chat.id, msg.from_user.id) and not is_admin(msg.from_user.id):
         return await msg.reply("⚠️ Sirf admins unwarn kar sakte hain.")
     target = msg.reply_to_message
-    if not target:
-        return await msg.reply("↩️ Reply karke /unwarn likho.")
+    if not target: return await msg.reply("↩️ Reply karke /unwarn likho.")
     reset_warns(target.from_user.id, msg.chat.id)
     await msg.reply(f"✅ <b>{target.from_user.mention_html()}</b> warnings reset.", parse_mode="HTML")
 
 @dp.message(Command("pin"))
 async def cmd_pin(msg: Message):
-    if msg.chat.type == "private":
-        return await msg.reply("⚠️ Ye command group mein use karo.")
+    if msg.chat.type == "private": return await msg.reply("⚠️ Ye command group mein use karo.")
     if not await is_group_admin(bot, msg.chat.id, msg.from_user.id) and not is_admin(msg.from_user.id):
         return await msg.reply("⚠️ Sirf admins pin kar sakte hain.")
     target = msg.reply_to_message
-    if not target:
-        return await msg.reply("↩️ Reply karke /pin likho.")
+    if not target: return await msg.reply("↩️ Reply karke /pin likho.")
     try:
         await bot.pin_chat_message(msg.chat.id, target.message_id, disable_notification=False)
         await msg.reply("📌 Message pin ho gaya.")
@@ -1338,8 +1624,7 @@ async def cmd_pin(msg: Message):
 
 @dp.message(Command("unpin"))
 async def cmd_unpin(msg: Message):
-    if msg.chat.type == "private":
-        return await msg.reply("⚠️ Ye command group mein use karo.")
+    if msg.chat.type == "private": return await msg.reply("⚠️ Ye command group mein use karo.")
     if not await is_group_admin(bot, msg.chat.id, msg.from_user.id) and not is_admin(msg.from_user.id):
         return await msg.reply("⚠️ Sirf admins unpin kar sakte hain.")
     try:
@@ -1350,13 +1635,11 @@ async def cmd_unpin(msg: Message):
 
 @dp.message(Command("purge"))
 async def cmd_purge(msg: Message):
-    if msg.chat.type == "private":
-        return await msg.reply("⚠️ Ye command group mein use karo.")
+    if msg.chat.type == "private": return await msg.reply("⚠️ Ye command group mein use karo.")
     if not await is_group_admin(bot, msg.chat.id, msg.from_user.id) and not is_admin(msg.from_user.id):
         return await msg.reply("⚠️ Sirf admins purge kar sakte hain.")
     target = msg.reply_to_message
-    if not target:
-        return await msg.reply("↩️ Reply karke /purge likho.")
+    if not target: return await msg.reply("↩️ Reply karke /purge likho.")
     deleted = 0
     try:
         for mid in range(target.message_id, msg.message_id + 1):
@@ -1367,10 +1650,8 @@ async def cmd_purge(msg: Message):
                 pass
         status = await msg.answer(f"🗑 <b>{deleted} messages delete ho gaye.</b>", parse_mode="HTML")
         await asyncio.sleep(3)
-        try:
-            await status.delete()
-        except Exception:
-            pass
+        try: await status.delete()
+        except Exception: pass
     except Exception as e:
         await msg.reply(f"❌ Purge nahi ho saka: {e}")
 
