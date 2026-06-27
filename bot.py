@@ -108,6 +108,7 @@ for col_sql in [
     "ALTER TABLE chats ADD COLUMN username TEXT",
     "ALTER TABLE chats ADD COLUMN chat_type TEXT",
     "ALTER TABLE chats ADD COLUMN accept INTEGER DEFAULT 1",
+    "ALTER TABLE chats ADD COLUMN invite_link TEXT",
 ]:
     try:
         cur.execute(col_sql)
@@ -737,7 +738,7 @@ async def cb_chat_acceptold(cb: CallbackQuery):
 async def _resolve_peer_safe(client, cid: int):
     """
     Pyrogram client se valid InputChannel/InputPeer banao.
-    resolve_peer() fail ho toh raw GetChannels call se access_hash lete hain.
+    get_dialogs() se cache warm karo — guaranteed fix.
     """
     from pyrogram.raw import functions as raw_fn, types as raw_types
 
@@ -747,14 +748,22 @@ async def _resolve_peer_safe(client, cid: int):
     except Exception:
         pass
 
-    # 2. get_chat() se warm karo phir dobara try
+    # 2. get_dialogs() se poora cache warm karo — saare channels/groups access_hash mil jaate hain
+    try:
+        async for _ in client.get_dialogs():
+            pass
+        return await client.resolve_peer(cid)
+    except Exception:
+        pass
+
+    # 3. get_chat() se warm karo phir try
     try:
         await client.get_chat(cid)
         return await client.resolve_peer(cid)
     except Exception:
         pass
 
-    # 3. Raw GetChannels call — access_hash directly milta hai
+    # 4. Raw GetChannels — direct access_hash fetch
     try:
         raw_id = abs(cid)
         id_str = str(raw_id)
@@ -765,32 +774,9 @@ async def _resolve_peer_safe(client, cid: int):
             )
         )
         chats = getattr(result, "chats", [])
-        if chats:
+        if chats and getattr(chats[0], "access_hash", 0):
             ch = chats[0]
-            return raw_types.InputChannel(
-                channel_id=ch.id,
-                access_hash=ch.access_hash
-            )
-    except Exception:
-        pass
-
-    # 4. GetFullChannel try
-    try:
-        raw_id = abs(cid)
-        id_str = str(raw_id)
-        channel_id = int(id_str[3:]) if id_str.startswith("100") else raw_id
-        result = await client.invoke(
-            raw_fn.channels.GetFullChannel(
-                channel=raw_types.InputChannel(channel_id=channel_id, access_hash=0)
-            )
-        )
-        chats = getattr(result, "chats", [])
-        if chats:
-            ch = chats[0]
-            return raw_types.InputChannel(
-                channel_id=ch.id,
-                access_hash=ch.access_hash
-            )
+            return raw_types.InputChannel(channel_id=ch.id, access_hash=ch.access_hash)
     except Exception:
         pass
 
@@ -1260,12 +1246,15 @@ async def _get_session_client(user_id: int):
         return None, "❌ Session nahi hai. Pehle /login karo."
     api_id, api_hash, session_str = row
     try:
+        import os, hashlib
+        os.makedirs("sessions", exist_ok=True)
+        # File-based session taaki access_hash cache persist ho
+        session_file = os.path.join("sessions", "userbot_" + hashlib.md5(session_str[:20].encode()).hexdigest()[:8])
         client = PyroClient(
-            name="userbot",
+            name=session_file,
             api_id=int(api_id),
             api_hash=api_hash,
             session_string=session_str,
-            in_memory=True,
             no_updates=True
         )
         await client.start()
@@ -1770,9 +1759,17 @@ async def _flow_add_chat_common(msg: Message, state: FSMContext, forced_type: st
         )
 
     # ── Save to DB ─────────────────────────────────────────────
+    # Export invite link so userbot can join later for peer resolution
+    saved_invite_link = None
+    try:
+        link_obj = await bot.export_chat_invite_link(chat_id)
+        saved_invite_link = str(link_obj)
+    except Exception:
+        pass
+
     cur.execute(
-        "INSERT OR REPLACE INTO chats (chat_id, title, username, chat_type, accept) VALUES (?,?,?,?,1)",
-        (chat_id, title, username, actual_type)
+        "INSERT OR REPLACE INTO chats (chat_id, title, username, chat_type, accept, invite_link) VALUES (?,?,?,?,1,?)",
+        (chat_id, title, username, actual_type, saved_invite_link)
     )
     conn.commit()
 
@@ -2478,6 +2475,28 @@ async def _save_session(msg: Message, state: FSMContext, client: PyroClient, dat
         parse_mode="HTML"
     )
 
+@dp.message(Command("setinvite"))
+async def cmd_setinvite(msg: Message):
+    """Admin: /setinvite -100xxx https://t.me/+xxxx"""
+    if not is_admin(msg.from_user.id):
+        return await msg.reply("⚠️ Sirf admins.")
+    parts = msg.text.strip().split(maxsplit=2)
+    if len(parts) < 3:
+        return await msg.reply(
+            "❌ Usage: <code>/setinvite -100CHATID https://t.me/+xxxx</code>",
+            parse_mode="HTML"
+        )
+    try:
+        cid = int(parts[1])
+    except ValueError:
+        return await msg.reply("❌ Chat ID galat hai. Example: <code>-1001234567890</code>", parse_mode="HTML")
+    link = parts[2].strip()
+    cur.execute("UPDATE chats SET invite_link=? WHERE chat_id=?", (link, cid))
+    if cur.rowcount == 0:
+        return await msg.reply("❌ Yeh chat DB mein nahi hai. Pehle /addchannel karo.")
+    conn.commit()
+    await msg.reply(f"✅ Invite link save ho gaya chat <code>{cid}</code> ke liye.", parse_mode="HTML")
+
 @dp.message(Command("logout"))
 async def cmd_logout(msg: Message):
     if not is_admin(msg.from_user.id):
@@ -2562,12 +2581,14 @@ async def _acceptold_task(
     details    = []
 
     try:
+        import os, hashlib
+        os.makedirs("sessions", exist_ok=True)
+        session_file = os.path.join("sessions", "userbot_" + hashlib.md5(session_str[:20].encode()).hexdigest()[:8])
         client = PyroClient(
-            name="acceptold",
+            name=session_file,
             api_id=int(api_id),
             api_hash=api_hash,
             session_string=session_str,
-            in_memory=True,
             no_updates=True
         )
         await client.start()
