@@ -865,7 +865,10 @@ async def _run_acceptold(admin_id: int, status_msg, specific_chat_id=None):
     except Exception as e:
         await status_msg.edit_text(f"❌ Error: <code>{e}</code>", parse_mode="HTML")
     finally:
-        await client.stop()
+        try:
+            await client.stop()
+        except Exception:
+            pass
 
 
 CANCEL_KB = InlineKeyboardMarkup(inline_keyboard=[
@@ -1327,7 +1330,10 @@ async def _fetch_and_show_chats(user_id: int, chat_id: int, status_msg_id: int, 
             uname = chat.username
             all_chats.append((cid, chat.title or str(cid), uname, ctype))
 
-        await client.stop()
+        try:
+            await client.stop()
+        except Exception:
+            pass
 
         cur.execute("SELECT chat_id FROM chats")
         added_ids = {r[0] for r in cur.fetchall()}
@@ -1493,7 +1499,10 @@ async def _mass_accept_reject(user_id: int, chat_id: int, status_msg_id: int, ap
             except Exception as e:
                 details.append(f"⚠️ <b>{title[:22]}</b>: {str(e)[:40]}")
 
-        await client.stop()
+        try:
+            await client.stop()
+        except Exception:
+            pass
 
         detail_text = "\n".join(details[:20]) if details else "<i>Koi pending requests nahi mile.</i>"
         if len(details) > 20:
@@ -1652,7 +1661,10 @@ async def _do_acceptold(chat_id: int, specific_chat, notify_user_id: int = None)
             parse_mode="HTML"
         )
     finally:
-        await client.stop()
+        try:
+            await client.stop()
+        except Exception:
+            pass
 
 async def _flow_add_chat_common(msg: Message, state: FSMContext, forced_type: str = None):
     """
@@ -2448,7 +2460,13 @@ async def _save_session(msg: Message, state: FSMContext, client: PyroClient, dat
         (msg.from_user.id, api_id, api_hash, phone, session_str)
     )
     conn.commit()
-    await client.stop()
+    try:
+        try:
+            await client.stop()
+        except Exception:
+            pass
+    except Exception:
+        pass
     _login_clients.pop(msg.from_user.id, None)
     await state.clear()
     await msg.reply(
@@ -2594,7 +2612,10 @@ async def _acceptold_task(
                 total_fail += fail
                 details.append(f"✅ {title[:20]}: {ok} accepted, {fail} fail")
 
-        await client.stop()
+        try:
+            await client.stop()
+        except Exception:
+            pass
 
         detail_text = "\n".join(details[:15])
         if len(details) > 15:
