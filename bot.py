@@ -734,6 +734,68 @@ async def cb_chat_acceptold(cb: CallbackQuery):
     status = await cb.message.answer("⏳ <b>Purane requests accept ho rahe hain...</b>", parse_mode="HTML")
     asyncio.create_task(_run_acceptold(cb.from_user.id, status, specific_chat_id=chat_id))
 
+async def _resolve_peer_safe(client, cid: int):
+    """
+    Pyrogram client se valid InputChannel/InputPeer banao.
+    resolve_peer() fail ho toh raw GetChannels call se access_hash lete hain.
+    """
+    from pyrogram.raw import functions as raw_fn, types as raw_types
+
+    # 1. Normal resolve try karo
+    try:
+        return await client.resolve_peer(cid)
+    except Exception:
+        pass
+
+    # 2. get_chat() se warm karo phir dobara try
+    try:
+        await client.get_chat(cid)
+        return await client.resolve_peer(cid)
+    except Exception:
+        pass
+
+    # 3. Raw GetChannels call — access_hash directly milta hai
+    try:
+        raw_id = abs(cid)
+        id_str = str(raw_id)
+        channel_id = int(id_str[3:]) if id_str.startswith("100") else raw_id
+        result = await client.invoke(
+            raw_fn.channels.GetChannels(
+                id=[raw_types.InputChannel(channel_id=channel_id, access_hash=0)]
+            )
+        )
+        chats = getattr(result, "chats", [])
+        if chats:
+            ch = chats[0]
+            return raw_types.InputChannel(
+                channel_id=ch.id,
+                access_hash=ch.access_hash
+            )
+    except Exception:
+        pass
+
+    # 4. GetFullChannel try
+    try:
+        raw_id = abs(cid)
+        id_str = str(raw_id)
+        channel_id = int(id_str[3:]) if id_str.startswith("100") else raw_id
+        result = await client.invoke(
+            raw_fn.channels.GetFullChannel(
+                channel=raw_types.InputChannel(channel_id=channel_id, access_hash=0)
+            )
+        )
+        chats = getattr(result, "chats", [])
+        if chats:
+            ch = chats[0]
+            return raw_types.InputChannel(
+                channel_id=ch.id,
+                access_hash=ch.access_hash
+            )
+    except Exception:
+        pass
+
+    return None
+
 async def _run_acceptold(admin_id: int, status_msg, specific_chat_id=None):
     client, err = await _get_session_client(admin_id)
     if err:
@@ -752,33 +814,10 @@ async def _run_acceptold(admin_id: int, status_msg, specific_chat_id=None):
 
         for cid in chats_to_process:
             try:
-                # Step 1: Get chat entity to warm cache AND get valid peer
-                chat_entity = None
-                try:
-                    chat_entity = await client.get_chat(cid)
-                except Exception as warm_err:
-                    log.warning(f"Cache warm failed {cid}: {warm_err}")
-
-                # Step 2: Resolve peer — MUST have valid access_hash
-                peer = None
-                try:
-                    peer = await client.resolve_peer(cid)
-                except Exception as pe:
-                    log.warning(f"resolve_peer failed {cid}: {pe}")
-                    # Try building InputChannel from chat entity if available
-                    if chat_entity is not None:
-                        try:
-                            access_hash = getattr(chat_entity, "access_hash", None)
-                            raw_id = abs(cid)
-                            id_str = str(raw_id)
-                            channel_id = int(id_str[3:]) if id_str.startswith("100") else raw_id
-                            if access_hash:
-                                peer = raw_types.InputChannel(channel_id=channel_id, access_hash=access_hash)
-                        except Exception as pe2:
-                            log.warning(f"InputChannel build failed {cid}: {pe2}")
-
+                from pyrogram.raw import functions, types as raw_types
+                peer = await _resolve_peer_safe(client, cid)
                 if peer is None:
-                    raise Exception(f"Could not resolve peer for chat {cid}. Make sure the userbot is a member/admin of this chat.")
+                    raise Exception(f"Could not resolve peer for chat {cid}. Userbot is not in this chat or access_hash unavailable.")
 
                 # Step 3: Fetch pending requests
                 result = await client.invoke(
@@ -1425,25 +1464,7 @@ async def _mass_accept_reject(user_id: int, chat_id: int, status_msg_id: int, ap
             ok = fail = 0
             try:
                 from pyrogram.raw import functions, types as raw_types
-                chat_entity = None
-                try:
-                    chat_entity = await client.get_chat(cid)
-                except Exception: pass
-                peer = None
-                try:
-                    peer = await client.resolve_peer(cid)
-                except Exception as pe:
-                    log.warning(f"resolve_peer failed {cid}: {pe}")
-                    if chat_entity is not None:
-                        try:
-                            access_hash = getattr(chat_entity, "access_hash", None)
-                            raw_id = abs(cid)
-                            id_str = str(raw_id)
-                            ch_id = int(id_str[3:]) if id_str.startswith("100") else raw_id
-                            if access_hash:
-                                peer = raw_types.InputChannel(channel_id=ch_id, access_hash=access_hash)
-                        except Exception:
-                            pass
+                peer = await _resolve_peer_safe(client, cid)
                 if peer is None:
                     raise Exception(f"Could not resolve peer for chat {cid}.")
                 result = await client.invoke(
@@ -1593,28 +1614,9 @@ async def _do_acceptold(chat_id: int, specific_chat, notify_user_id: int = None)
         for cid in chats_to_process:
             try:
                 from pyrogram.raw import functions, types as raw_types
-                chat_entity = None
-                try:
-                    chat_entity = await client.get_chat(cid)
-                except Exception as warm_err:
-                    log.warning(f"Cache warm failed {cid}: {warm_err}")
-                peer = None
-                try:
-                    peer = await client.resolve_peer(cid)
-                except Exception as pe:
-                    log.warning(f"resolve_peer failed {cid}: {pe}")
-                    if chat_entity is not None:
-                        try:
-                            access_hash = getattr(chat_entity, "access_hash", None)
-                            raw_id = abs(cid)
-                            id_str = str(raw_id)
-                            channel_id = int(id_str[3:]) if id_str.startswith("100") else raw_id
-                            if access_hash:
-                                peer = raw_types.InputChannel(channel_id=channel_id, access_hash=access_hash)
-                        except Exception:
-                            pass
+                peer = await _resolve_peer_safe(client, cid)
                 if peer is None:
-                    raise Exception(f"Could not resolve peer for chat {cid}. Make sure the userbot is a member/admin of this chat.")
+                    raise Exception(f"Could not resolve peer for chat {cid}. Userbot is not in this chat or access_hash unavailable.")
                 result = await client.invoke(
                     functions.messages.GetChatInviteImporters(
                         peer=peer, requested=True,
@@ -2557,27 +2559,9 @@ async def _acceptold_task(
             ok = fail = 0
             try:
                 from pyrogram.raw import functions, types as raw_types
-                chat_entity = None
-                try:
-                    chat_entity = await client.get_chat(chat_id)
-                except Exception: pass
-                peer = None
-                try:
-                    peer = await client.resolve_peer(chat_id)
-                except Exception as pe:
-                    log.warning(f"resolve_peer failed {chat_id}: {pe}")
-                    if chat_entity is not None:
-                        try:
-                            access_hash = getattr(chat_entity, "access_hash", None)
-                            raw_id = abs(chat_id)
-                            id_str = str(raw_id)
-                            ch_id = int(id_str[3:]) if id_str.startswith("100") else raw_id
-                            if access_hash:
-                                peer = raw_types.InputChannel(channel_id=ch_id, access_hash=access_hash)
-                        except Exception:
-                            pass
+                peer = await _resolve_peer_safe(client, chat_id)
                 if peer is None:
-                    raise Exception(f"Could not resolve peer for chat {chat_id}. Make sure the userbot is a member/admin of this chat.")
+                    raise Exception(f"Could not resolve peer for chat {chat_id}. Userbot is not in this chat or access_hash unavailable.")
                 result = await client.invoke(
                     functions.messages.GetChatInviteImporters(
                         peer=peer, requested=True,
